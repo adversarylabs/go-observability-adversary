@@ -1,0 +1,1 @@
+{"risk":"high","findings":[{"ruleId":"go-observability.metric-cardinality","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
