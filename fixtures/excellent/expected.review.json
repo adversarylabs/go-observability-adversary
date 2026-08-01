@@ -1,1 +1,1 @@
-{"risk":"none","findings":[],"positiveKeys":["go-observability.context-propagated","go-observability.flush-owned"],"ship":true}
+{"risk":"none","findings":[],"positiveKeys":["go-obs.context-propagated","go-obs.flush-owned"],"ship":true}

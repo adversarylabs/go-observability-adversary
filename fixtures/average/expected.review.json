@@ -1,1 +1,1 @@
-{"risk":"medium","findings":[{"ruleId":"go-observability.context-loss","severity":"medium","evidenceCount":1}],"positiveKeys":[],"ship":false}
+{"risk":"medium","findings":[{"ruleId":"go-obs.trace.background-context","severity":"medium","evidenceCount":1},{"ruleId":"go-obs.slog.args-mismatch","severity":"medium","evidenceCount":1}],"positiveKeys":[],"ship":false}

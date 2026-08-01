@@ -45,6 +45,6 @@ test("the published runtime executes without node_modules", async () => {
 
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
-  assert.equal(envelope.result.adversary.name, "go-observability");
+  assert.equal(envelope.result.adversary.name, "go/observability");
   assert.deepEqual(envelope.result.findings, []);
 });

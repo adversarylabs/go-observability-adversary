@@ -3,13 +3,21 @@ package excellent
 import "context"
 
 type span struct{}
+
+func (span) End() {}
+
 type tracer struct{}
+
+func (tracer) Start(ctx context.Context, _ string) (context.Context, span) {
+	return ctx, span{}
+}
+
 type provider struct{}
 
-func (tracer) Start(context.Context, string) (context.Context, span) { return context.Background(), span{} }
-func (provider) Shutdown(context.Context) error                    { return nil }
+func (provider) Shutdown(context.Context) error { return nil }
 
 func observe(ctx context.Context, tr tracer, tp provider) {
 	defer tp.Shutdown(ctx)
-	_, _ = tr.Start(ctx, "work")
+	_, sp := tr.Start(ctx, "work")
+	defer sp.End()
 }
