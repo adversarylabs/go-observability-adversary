@@ -1,5 +1,5 @@
 name: go/observability
-version: 0.0.2
+version: 0.0.3
 description: "Reviews Go logs, traces, metrics, context propagation, and telemetry lifecycle defects."
 
 triggers:
