@@ -1,34 +1,32 @@
-# Train draft d7f3fcac
-
-- **Package:** `go-observability`
-- **Kind:** draft — Draft improvement — suggested package change from one or more misses.
-- **Title:** Detect failure-only metrics missing a denominator
-- **Summary:** Detect failure-only metrics missing a denominator
-- **Run:** `slice-1786465434795758000`
-
-_Applied by `adversary train results apply`. Synthetic draft — do not bank summary into `agent/voice.md`._
-
 ## What we want to improve
 
-Flag diffs that introduce failure/error counters without a corresponding total/attempts metric in the same changed files so operators can compute meaningful failure rates from the changed instrumentation. Example domains include HTTP servers (request_errors_total vs requests_total) and clients or subsystems that track connection or allocation failures.
+Catch failure-only metric families that cannot answer the operational question they imply. A counter such as `id_allocation_failures_total` needs a comparable count of allocation attempts; without it, operators cannot distinguish an isolated failure from a subsystem that is failing every request.
 
-## Why this matters
-
-Telemetry that records only failure counts without a matching denominator prevents computing failure rates and therefore cannot distinguish rare noise from systemic regressions. Detecting this in head-side changes ensures the instrumentation change includes a usable denominator or an explicit equivalent within the same changed files.
+This is not a general request to add more telemetry. It applies only when changed Go instrumentation defines a failure/error counter whose natural success population is measurable, but the reviewed metric family has no same-scope attempts, requests, operations, or total counter.
 
 ## Examples
 
-- HTTP server: the diff adds a Prometheus counter named request_errors_total but the same changed files do not add requests_total, so error rates per endpoint are not computable.
-- Database client: the diff adds db_connection_failures or connection_failures_total without adding connection_attempts or connections_total in the same changed files, leaving failure counts ambiguous under varying traffic.
+- Flag `id_allocation_failures_total` when there is no `id_allocation_attempts_total` (or equivalent allocation total).
+- Flag `request_errors_total` when there is no comparable `requests_total`.
+- Stay quiet when numerator and denominator are defined together, including when they are split across changed files in the same Go package.
+- Stay quiet for self-contained event counters such as `process_restarts_total` or `disk_corruption_incidents_total`; those are useful absolute counts and do not claim to represent a failure rate.
 
-## Keep it focused
+## Precision requirements
 
-- Adding process_restarts_total as a global restart counter should not be flagged because no denominator is meaningful.
-- Adding request_errors_total and requests_total together in the same changed files should not be flagged because the denominator is present.
+- Match Prometheus counter definitions, including the local wrapper shapes already used by projects such as Cilium.
+- Pair metrics by their operation subject, not merely by finding any `_total` counter nearby. A connection-attempt counter does not explain allocation failures.
+- Treat only counters as comparable event totals. A current-state gauge such as `active_requests` is not a denominator for historical failures.
+- Prefer silence when the operation subject cannot be identified confidently.
+- Point the finding at the failure-counter definition and recommend a same-label, same-scope attempts/operations counter.
 
 ## Done when
 
-- [ ] Flag when the head-side diff adds a new Prometheus counter whose name or symbol contains "error", "fail", "failed", or "failures" and the same changed files add no corresponding total/attempts metric for the same noun.
-- [ ] Do not flag when the head-side diff adds both a failure counter and a same-scoped total or attempts metric in the same changed files.
-- [ ] Do not flag when the head-side diff adds an absolute-event counter whose semantics are context-free, for example process_restarts_total or disk_corruption_incidents_total.
-- [ ] Consider an alternative same-scoped signal such as an active_requests gauge or requests_total added in the same files as an acceptable denominator and do not raise a warning.
+- [ ] A Cilium-style `id_allocation_failures_total` definition without allocation attempts is reported.
+- [ ] `request_errors_total` without `requests_total` is reported.
+- [ ] Same-subject attempts/total counters suppress the finding across one or multiple changed package files.
+- [ ] Unrelated totals, gauges, and context-free event counters do not create or suppress findings incorrectly.
+- [ ] Focused vulnerable and clean fixtures cover the rule, and the five graded snapshots remain unchanged.
+
+<!-- adversary-train-source: package=go-observability result=d7f3fcac run=slice-1786465434795758000 -->
+
+<!-- adversary-train-key:ccf89704 -->

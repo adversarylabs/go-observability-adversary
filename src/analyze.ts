@@ -1,4 +1,5 @@
 import { domain } from "./domain.js";
+import { failureCounterWithoutDenominatorSignals } from "./failure-rates.js";
 import { metricDurationUnitMismatchSignals } from "./metric-units.js";
 import { parseGo } from "./parser.js";
 import { type Analysis, type Discovery, type PositiveSignal, type Signal, type SourceRevision } from "./types.js";
@@ -28,6 +29,10 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
 
   const fileByPath = new Map(discovery.files.map((file) => [file.path, file]));
   signals.push(...metricDurationUnitMismatchSignals(discovery.files).filter((item) => {
+    const file = fileByPath.get(item.path);
+    return file !== undefined && changed(file, item.line, item.endLine);
+  }));
+  signals.push(...failureCounterWithoutDenominatorSignals(discovery.files).filter((item) => {
     const file = fileByPath.get(item.path);
     return file !== undefined && changed(file, item.line, item.endLine);
   }));
