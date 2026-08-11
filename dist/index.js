@@ -17075,6 +17075,17 @@ var domain = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.metrics.failure-without-denominator",
+      title: "A failure counter has no comparable event total",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => count === 1 ? "1 failure counter lacks a same-subject attempts or total counter." : `${count} failure counters lack a same-subject attempts or total counter.`,
+      whyItMatters: "A failure count without the population that produced it cannot distinguish isolated noise from a subsystem failing every operation.",
+      impact: "Dashboards and alerts cannot compute a failure rate, so the new metric does not answer whether the system is healthy.",
+      recommendation: "Add a same-label counter for total attempts or operations in the same metric family and increment it on every attempt."
+    },
+    {
       id: "go-obs.metrics.duration-unit-mismatch",
       title: "A duration metric records a different unit than it declares",
       category: "observability",
@@ -17424,50 +17435,61 @@ function registerInRequestSignals(file) {
   return signals;
 }
 
-// src/metric-units.ts
-function metricDurationUnitMismatchSignals(files) {
-  const definitions = /* @__PURE__ */ new Map();
+// src/failure-rates.ts
+var FAILURE_TOKENS = /* @__PURE__ */ new Set(["error", "errors", "fail", "fails", "failed", "failure", "failures"]);
+var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution", "operation"]);
+function failureCounterWithoutDenominatorSignals(files) {
+  const byDirectory = /* @__PURE__ */ new Map();
   for (const file of files) {
     const directory = metricDirectory(file.path);
-    const packageDefinitions = definitions.get(directory) ?? [];
-    for (const definition of metricDefinitions(file.current)) {
-      packageDefinitions.push({ ...definition, path: file.path });
-    }
-    definitions.set(directory, packageDefinitions);
+    const definitions = byDirectory.get(directory) ?? [];
+    definitions.push(...counterDefinitions(file));
+    byDirectory.set(directory, definitions);
   }
   const signals = [];
-  for (const file of files) {
-    const byVariable = /* @__PURE__ */ new Map();
-    for (const definition of definitions.get(metricDirectory(file.path)) ?? []) {
-      const candidates = byVariable.get(definition.variable) ?? [];
-      candidates.push(definition);
-      byVariable.set(definition.variable, candidates);
-    }
-    for (const candidates of byVariable.values()) {
-      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
-      if (definition === void 0) continue;
-      signals.push(...observationMismatches(file, definition));
+  for (const definitions of byDirectory.values()) {
+    for (const failure of definitions) {
+      if (failure.subject === null) continue;
+      const hasDenominator = definitions.some(
+        (candidate) => candidate !== failure && isDenominatorFor(candidate, failure.subject)
+      );
+      if (hasDenominator) continue;
+      signals.push({
+        ruleId: "go-obs.metrics.failure-without-denominator",
+        path: failure.path,
+        line: failure.line,
+        message: `Metric ${failure.metricName} counts failures without a comparable ${subjectName(failure.subject)} attempts or total counter.`,
+        snippet: failure.metricName,
+        data: {
+          metric: failure.metricName,
+          subject: failure.subject.join("_")
+        }
+      });
     }
   }
-  return deduplicate(signals);
+  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
 }
-function metricDefinitions(source) {
+function counterDefinitions(file) {
   const definitions = [];
-  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
+  const constructor = /\b(?:(?:prometheus|promauto|metric)\.)NewCounter(?:VecWithLabels|Vec|Func)?\s*\(/g;
   let match;
-  while ((match = constructor.exec(source)) !== null) {
-    const variable = match[1];
-    if (variable === void 0) continue;
-    const openBrace = source.indexOf("{", constructor.lastIndex);
+  while ((match = constructor.exec(file.current)) !== null) {
+    const openBrace = file.current.indexOf("{", constructor.lastIndex);
     if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
-    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
-    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
-    const body2 = balancedBody(source, openBrace, "{", "}");
+    const optionsType = file.current.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.|metric\.)?CounterOpts$/.test(optionsType)) continue;
+    const body2 = balancedBody(file.current, openBrace, "{", "}");
     if (body2 === null) continue;
     const metricName = metricNameFromOptions(body2);
-    const unit = declaredDurationUnit(metricName);
-    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
+    if (metricName === "") continue;
+    const tokens = metricTokens(metricName);
+    definitions.push({
+      path: file.path,
+      line: file.current.slice(0, match.index ?? 0).split("\n").length,
+      metricName,
+      subject: failureSubject(tokens),
+      denominatorTokens: denominatorTokens(tokens)
+    });
   }
   return definitions;
 }
@@ -17476,51 +17498,37 @@ function metricNameFromOptions(body2) {
   const literals = [...nameField.matchAll(/"([^"]+)"/g)];
   return literals.at(-1)?.[1] ?? "";
 }
-function declaredDurationUnit(metricName) {
-  const normalized = metricName.toLowerCase();
-  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
-    if (normalized.endsWith(`_${unit}`)) return unit;
-  }
-  return null;
+function metricTokens(metricName) {
+  const tokens = metricName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.at(-1) === "total") tokens.pop();
+  return tokens;
 }
-function observationMismatches(file, definition) {
-  const variable = escapeRegExp(definition.variable);
-  const observe = new RegExp(
-    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
-    "g"
+function failureSubject(tokens) {
+  if (!tokens.some((token) => FAILURE_TOKENS.has(token))) return null;
+  const subject = tokens.filter((token) => !FAILURE_TOKENS.has(token)).map(normalizeSubjectToken);
+  return subject.length === 0 ? null : subject;
+}
+function denominatorTokens(tokens) {
+  return tokens.map(normalizeSubjectToken);
+}
+function isDenominatorFor(candidate, subject) {
+  if (candidate.subject !== null) return false;
+  if (sameTokens(candidate.denominatorTokens, subject)) return true;
+  const withoutQualifier = candidate.denominatorTokens.filter(
+    (token) => !DENOMINATOR_TOKENS.has(token) || subject.includes(token)
   );
-  const signals = [];
-  let match;
-  while ((match = observe.exec(file.current)) !== null) {
-    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
-    if (openParen < (match.index ?? 0)) continue;
-    const argument = balancedBody(file.current, openParen, "(", ")");
-    if (argument === null) continue;
-    const observedUnit = observedDurationUnit(argument);
-    if (observedUnit === null || observedUnit === definition.unit) continue;
-    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
-    signals.push({
-      ruleId: "go-obs.metrics.duration-unit-mismatch",
-      path: file.path,
-      line,
-      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
-      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
-      data: {
-        metric: definition.metricName,
-        declaredUnit: definition.unit,
-        observedUnit
-      }
-    });
-  }
-  return signals;
+  return sameTokens(withoutQualifier, subject);
 }
-function observedDurationUnit(argument) {
-  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
-  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
-  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
-  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
-  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
-  return null;
+function normalizeSubjectToken(token) {
+  if (token.endsWith("ies") && token.length > 3) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
+  return token;
+}
+function sameTokens(left, right) {
+  return left.length === right.length && left.every((token, index) => token === right[index]);
+}
+function subjectName(subject) {
+  return subject.join(" ");
 }
 function balancedBody(source, openIndex, open2, close) {
   let depth = 0;
@@ -17551,6 +17559,137 @@ function balancedBody(source, openIndex, open2, close) {
   return null;
 }
 function metricDirectory(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+
+// src/metric-units.ts
+function metricDurationUnitMismatchSignals(files) {
+  const definitions = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const directory = metricDirectory2(file.path);
+    const packageDefinitions = definitions.get(directory) ?? [];
+    for (const definition of metricDefinitions(file.current)) {
+      packageDefinitions.push({ ...definition, path: file.path });
+    }
+    definitions.set(directory, packageDefinitions);
+  }
+  const signals = [];
+  for (const file of files) {
+    const byVariable = /* @__PURE__ */ new Map();
+    for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
+      const candidates = byVariable.get(definition.variable) ?? [];
+      candidates.push(definition);
+      byVariable.set(definition.variable, candidates);
+    }
+    for (const candidates of byVariable.values()) {
+      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
+      if (definition === void 0) continue;
+      signals.push(...observationMismatches(file, definition));
+    }
+  }
+  return deduplicate(signals);
+}
+function metricDefinitions(source) {
+  const definitions = [];
+  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
+  let match;
+  while ((match = constructor.exec(source)) !== null) {
+    const variable = match[1];
+    if (variable === void 0) continue;
+    const openBrace = source.indexOf("{", constructor.lastIndex);
+    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
+    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
+    const body2 = balancedBody2(source, openBrace, "{", "}");
+    if (body2 === null) continue;
+    const metricName = metricNameFromOptions2(body2);
+    const unit = declaredDurationUnit(metricName);
+    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
+  }
+  return definitions;
+}
+function metricNameFromOptions2(body2) {
+  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
+  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
+  return literals.at(-1)?.[1] ?? "";
+}
+function declaredDurationUnit(metricName) {
+  const normalized = metricName.toLowerCase();
+  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
+    if (normalized.endsWith(`_${unit}`)) return unit;
+  }
+  return null;
+}
+function observationMismatches(file, definition) {
+  const variable = escapeRegExp(definition.variable);
+  const observe = new RegExp(
+    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
+    "g"
+  );
+  const signals = [];
+  let match;
+  while ((match = observe.exec(file.current)) !== null) {
+    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
+    if (openParen < (match.index ?? 0)) continue;
+    const argument = balancedBody2(file.current, openParen, "(", ")");
+    if (argument === null) continue;
+    const observedUnit = observedDurationUnit(argument);
+    if (observedUnit === null || observedUnit === definition.unit) continue;
+    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
+    signals.push({
+      ruleId: "go-obs.metrics.duration-unit-mismatch",
+      path: file.path,
+      line,
+      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
+      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
+      data: {
+        metric: definition.metricName,
+        declaredUnit: definition.unit,
+        observedUnit
+      }
+    });
+  }
+  return signals;
+}
+function observedDurationUnit(argument) {
+  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
+  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
+  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
+  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
+  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
+  return null;
+}
+function balancedBody2(source, openIndex, open2, close) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === void 0) break;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\" && quote !== "`") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === open2) depth += 1;
+    if (character !== close) continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+  return null;
+}
+function metricDirectory2(path) {
   const separator = path.lastIndexOf("/");
   return separator === -1 ? "" : path.slice(0, separator);
 }
@@ -21596,6 +21735,10 @@ async function analyzeDiscovery(discovery) {
   }
   const fileByPath = new Map(discovery.files.map((file) => [file.path, file]));
   signals.push(...metricDurationUnitMismatchSignals(discovery.files).filter((item) => {
+    const file = fileByPath.get(item.path);
+    return file !== void 0 && changed(file, item.line, item.endLine);
+  }));
+  signals.push(...failureCounterWithoutDenominatorSignals(discovery.files).filter((item) => {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));

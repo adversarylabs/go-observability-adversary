@@ -10,6 +10,23 @@ export const domain: DomainDefinition = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.metrics.failure-without-denominator",
+      title: "A failure counter has no comparable event total",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        count === 1
+          ? "1 failure counter lacks a same-subject attempts or total counter."
+          : `${count} failure counters lack a same-subject attempts or total counter.`,
+      whyItMatters:
+        "A failure count without the population that produced it cannot distinguish isolated noise from a subsystem failing every operation.",
+      impact:
+        "Dashboards and alerts cannot compute a failure rate, so the new metric does not answer whether the system is healthy.",
+      recommendation:
+        "Add a same-label counter for total attempts or operations in the same metric family and increment it on every attempt.",
+    },
+    {
       id: "go-obs.metrics.duration-unit-mismatch",
       title: "A duration metric records a different unit than it declares",
       category: "observability",

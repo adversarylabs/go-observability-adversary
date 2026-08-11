@@ -2,11 +2,11 @@
 
 This file is the **public audit list** of detectors for the **go-observability** adversary. High-confidence logging/metrics/tracing defects in Go services with file:line evidence — not a "you should add observability" nag machine. Absence-of-telemetry findings are banned; we flag telemetry that is *broken*.
 
-Runtime source of truth: [`src/spec.ts`](src/spec.ts) / [`src/rules.ts`](src/rules.ts).
+Runtime source of truth: [`src/domain.ts`](src/domain.ts), with cross-file metric analysis in [`src/metric-units.ts`](src/metric-units.ts) and [`src/failure-rates.ts`](src/failure-rates.ts).
 
 **Scope:** `*.go` excluding vendored trees. Focus on net/http, gRPC, slog/zap/zerolog/logrus, Prometheus client, and OpenTelemetry call sites.
 
-**Precision stance:** No "missing metrics/logs/traces" findings — that is style. Fire on telemetry defects that corrupt data or take down the telemetry stack itself (cardinality explosions, unended spans, swallowed panics, malformed structured logs). No Critical tier: observability defects cap at High.
+**Precision stance:** No generic "add more metrics/logs/traces" findings — that is style. The narrow exception is an internally incomplete metric family, such as a failure numerator that cannot be interpreted without its operation total. Fire on telemetry defects that corrupt data, make the emitted signal unusable, or take down the telemetry stack itself. No Critical tier: observability defects cap at High.
 
 Public grounding: Prometheus label-cardinality guidance ([instrumentation best practices](https://prometheus.io/docs/practices/instrumentation/)), OpenTelemetry Go span lifecycle docs, and the Go 1.21 vet slog analyzer.
 
@@ -61,6 +61,17 @@ Public grounding: Prometheus label-cardinality guidance ([instrumentation best p
 ---
 
 ## Medium
+
+### `go-obs.metrics.failure-without-denominator`
+
+| | |
+| --- | --- |
+| **What** | A Prometheus failure/error counter has no comparable same-subject event total |
+| **Why** | A raw failure count cannot distinguish isolated noise from a subsystem failing every operation when traffic varies |
+| **Looks for** | Changed `NewCounter`/`NewCounterVec` definitions (including Cilium's metric wrapper) whose metric name contains `error`/`failure` but whose Go package has no same-subject attempts, operations, requests, or total counter |
+| **Stays quiet when** | A comparable counter is present; the nearby metric is only an unrelated total or current-state gauge; the counter is a self-contained event such as process restarts rather than a failure numerator |
+| **Public example** | A Cilium metrics review required `id_allocation_attempts_total` alongside `id_allocation_failures_total` so operators could calculate the allocation failure rate |
+| **Remediation** | Add and increment a same-label attempts/operations counter for every operation represented by the failure metric |
 
 ### `go-obs.slog.args-mismatch`
 
