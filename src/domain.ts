@@ -10,6 +10,20 @@ export const domain: DomainDefinition = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.metrics.duration-unit-mismatch",
+      title: "A duration metric records a different unit than it declares",
+      category: "observability",
+      severity: "high",
+      confidence: "high",
+      summary: (count) =>
+        `${count} duration metric observation${count === 1 ? "" : "s"} disagree with the declared unit.`,
+      whyItMatters:
+        "Metric names are the unit contract for dashboards and histogram buckets; recording another scale silently corrupts every query.",
+      impact: "Latency panels, alerts, and quantiles are wrong by factors of thousands or billions.",
+      recommendation:
+        "Convert the observed duration to the unit named by the metric, normally seconds for Prometheus durations.",
+    },
+    {
       id: "go-obs.metrics.high-cardinality",
       title: "A metric label has unbounded cardinality",
       category: "observability",

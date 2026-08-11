@@ -14,6 +14,17 @@ Public grounding: Prometheus label-cardinality guidance ([instrumentation best p
 
 ## High
 
+### `go-obs.metrics.duration-unit-mismatch`
+
+| | |
+| --- | --- |
+| **What** | A Prometheus histogram or summary declares a duration unit in its metric name but records a different explicit Go duration unit |
+| **Why** | A milliseconds-to-seconds mismatch shifts every sample by 1,000×; raw `time.Duration` values recorded into `_seconds` metrics shift them by 1,000,000,000× |
+| **Looks for** | Package-local `NewHistogram`, `NewHistogramVec`, `NewSummary`, and `NewSummaryVec` collectors with `_seconds`, `_milliseconds`, `_microseconds`, or `_nanoseconds` names whose `Observe` call uses a different explicit conversion |
+| **Stays quiet when** | The name and conversion agree; the collector name has no explicit duration unit; the observed expression's unit cannot be proven |
+| **Public examples** | Human reviews in OffchainLabs/prysm#16733, grafana/mimir#911, and flipt-io/flipt#4673 questioned inconsistent or implicit metric duration units |
+| **Remediation** | Convert the observation to the declared unit, normally with `Duration.Seconds()` for Prometheus duration metrics |
+
 ### `go-obs.metrics.high-cardinality`
 
 | | |
