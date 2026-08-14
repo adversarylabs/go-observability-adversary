@@ -21836,12 +21836,12 @@ function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
     if (assignment.startIndex <= startIndex || assignment.endIndex >= use.startIndex) continue;
     if (insideNestedFunction(assignment, fn.body) && !immediatelyInvokedMutation(assignment, fn, name2, source)) continue;
     const left = assignment.childForFieldName("left");
-    if (left !== null && containsIdentifierNamed(left, name2, source)) return true;
+    if (left !== null && directlyAssignsIdentifier(left, name2, source)) return true;
   }
   for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
     if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
     const left = declaration.childForFieldName("left");
-    if (left === null || !containsIdentifierNamed(left, name2, source)) continue;
+    if (left === null || !directlyAssignsIdentifier(left, name2, source)) continue;
     const scope = enclosingBlock(declaration);
     if (scope !== null && containsNode(scope, use)) return true;
   }
@@ -21867,9 +21867,12 @@ function immediatelyInvokedMutation(mutation, fn, name2, source) {
   const prefix = source.slice(body2.startIndex, mutation.startIndex);
   return !new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
 }
-function containsIdentifierNamed(node, name2, source) {
+function directlyAssignsIdentifier(node, name2, source) {
   if (node.type === "identifier" && sourceText(node, source) === name2) return true;
-  return descendants(node, "identifier").some((candidate) => sourceText(candidate, source) === name2);
+  if (node.type !== "expression_list") return false;
+  return node.namedChildren.some(
+    (candidate) => candidate.type === "identifier" && sourceText(candidate, source) === name2
+  );
 }
 function enclosingBlock(node) {
   let current = node.parent;

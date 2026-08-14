@@ -461,12 +461,12 @@ function bindingChangesBeforeUse(
     if (insideNestedFunction(assignment, fn.body) &&
         !immediatelyInvokedMutation(assignment, fn, name, source)) continue;
     const left = assignment.childForFieldName("left");
-    if (left !== null && containsIdentifierNamed(left, name, source)) return true;
+    if (left !== null && directlyAssignsIdentifier(left, name, source)) return true;
   }
   for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
     if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
     const left = declaration.childForFieldName("left");
-    if (left === null || !containsIdentifierNamed(left, name, source)) continue;
+    if (left === null || !directlyAssignsIdentifier(left, name, source)) continue;
     const scope = enclosingBlock(declaration);
     if (scope !== null && containsNode(scope, use)) return true;
   }
@@ -504,9 +504,12 @@ function immediatelyInvokedMutation(
   return !new RegExp(`(?:\\bvar\\s+${escapeRegExp(name)}\\b|\\b${escapeRegExp(name)}\\s*:=)`).test(prefix);
 }
 
-function containsIdentifierNamed(node: Node, name: string, source: string): boolean {
+function directlyAssignsIdentifier(node: Node, name: string, source: string): boolean {
   if (node.type === "identifier" && sourceText(node, source) === name) return true;
-  return descendants(node, "identifier").some((candidate) => sourceText(candidate, source) === name);
+  if (node.type !== "expression_list") return false;
+  return node.namedChildren.some((candidate) =>
+    candidate.type === "identifier" && sourceText(candidate, source) === name
+  );
 }
 
 function enclosingBlock(node: Node): Node | null {

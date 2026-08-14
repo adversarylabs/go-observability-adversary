@@ -360,6 +360,15 @@ test("binds the classified, returned, and logged error without shadow or reassig
       return err`,
   );
   assert.equal((await cancellationEscalationSignals([source(nestedParameterDoesNotRebindOuter)])).length, 1);
+
+  const identifierUsedInAssignmentTarget = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      seen[err] = true
+      return err`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(identifierUsedInAssignmentTarget)])).length, 1);
 });
 
 test("multiline classification and logger operands anchor the exact changed semantic line", async () => {
