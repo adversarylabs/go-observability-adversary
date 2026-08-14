@@ -21503,6 +21503,7 @@ async function cancellationEscalationSignals(files) {
   for (const file of files) {
     if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
     const tree = await parseGo(file.current);
+    const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
     try {
       if (tree.rootNode.hasError) continue;
       const aliases = standardAliases(tree.rootNode, file.current);
@@ -21527,7 +21528,7 @@ async function cancellationEscalationSignals(files) {
             const logger = directErrorLogger(guarded, call, caller, result.name, file.current, aliases);
             if (logger === void 0) continue;
             const semantic = [normal.condition, normal.normalLog, normal.suppressedEffect, normal.returned, call, logger].filter((node) => node !== void 0);
-            const anchor = changedAnchor(file, semantic);
+            const anchor = changedAnchor(file, semantic, tree.rootNode, previousTree?.rootNode);
             if (anchor === void 0) continue;
             signals.push({
               ruleId: "go-obs.logging.normal-cancellation-as-error",
@@ -21547,6 +21548,7 @@ async function cancellationEscalationSignals(files) {
         }
       }
     } finally {
+      previousTree?.delete();
       tree.delete();
     }
   }
@@ -21615,13 +21617,14 @@ function normalCancellationReturns(fn, source, contextAlias, errorsAlias, import
     });
     if (returned === void 0) continue;
     const calls = descendants(consequence, "call_expression").filter((call) => !insideNestedFunction(call, consequence));
-    if (calls.some((call) => {
+    const reachableCalls = calls.filter((call) => isExpressionStatement(call, consequence) && isDirectInBlock(call, consequence) && directStatementIsReachable(call, consequence, fn, source));
+    if (reachableCalls.some((call) => {
       const method = selectedMethod(call, source);
       return method !== void 0 && ERROR_LOG_METHODS.has(method);
-    }) || descendants(consequence, "call_expression").some((call) => calledName(call, source) === "panic")) continue;
-    const normalLog = calls.find((call) => {
+    }) || reachableCalls.some((call) => calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source))) continue;
+    const normalLog = reachableCalls.find((call) => {
       const method = selectedMethod(call, source);
-      return method !== void 0 && NORMAL_LOG_METHODS.has(method) && isLoggingReceiver(call, source, imports) && isExpressionStatement(call, consequence) && NORMAL_WORDS.test(sourceText(call, source));
+      return method !== void 0 && NORMAL_LOG_METHODS.has(method) && isLoggingReceiver(call, source, imports) && NORMAL_WORDS.test(sourceText(call, source));
     });
     const effectScope = cancellation.errorGuard?.childForFieldName("consequence");
     const suppressedEffect = effectScope === null || effectScope === void 0 ? void 0 : descendants(effectScope, "call_expression").find((call) => {
@@ -21645,7 +21648,7 @@ function cancellationErrorName(condition, statement, fn, source, contextAlias, e
   const contextMatch = new RegExp(`^(?:([A-Za-z_]\\w*)\\.Err\\(\\)!=nil|nil!=([A-Za-z_]\\w*)\\.Err\\(\\))$`).exec(compact);
   if (contextMatch !== null) {
     const contextName = contextMatch[1] ?? contextMatch[2];
-    if (!functionReceivesContext(fn, source, contextName, contextAlias)) return void 0;
+    if (!functionReceivesContext(fn, source, contextName, contextAlias) || locallyShadowsParameter(fn, contextName, condition, source)) return void 0;
     let parent = statement.parent;
     while (parent !== null && parent.id !== fn.node.id) {
       if (parent.type === "if_statement") {
@@ -21767,12 +21770,13 @@ function blockTerminates(block, fn, source) {
   return false;
 }
 function statementTerminates(statement, fn, source) {
-  if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
+  if (["return_statement", "continue_statement", "break_statement", "goto_statement"].includes(statement.type)) return true;
   if (statement.type === "expression_statement") {
     const call = descendants(statement, "call_expression")[0];
-    if (call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source)) return true;
+    if (call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source)) return true;
   }
-  return statement.type === "if_statement" && ifTerminates(statement, fn, source);
+  if (statement.type === "if_statement") return ifTerminates(statement, fn, source);
+  return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source);
 }
 function directStatements(block) {
   return block.namedChildren.find((child) => child.type === "statement_list")?.namedChildren ?? block.namedChildren;
@@ -21783,11 +21787,37 @@ function ifTerminates(statement, fn, source) {
   if (consequence === null || alternative === null || !blockTerminates(consequence, fn, source)) return false;
   return alternative.type === "if_statement" ? ifTerminates(alternative, fn, source) : blockTerminates(alternative, fn, source);
 }
+function switchTerminates(statement, fn, source) {
+  const cases = statement.namedChildren.filter((child) => child.type === "expression_case" || child.type === "default_case");
+  if (cases.length === 0 || !cases.some((candidate) => candidate.type === "default_case")) return false;
+  return cases.every((candidate) => caseTerminates(candidate, fn, source));
+}
+function caseTerminates(candidate, fn, source) {
+  return directStatements(candidate).some((statement) => {
+    if (["return_statement", "goto_statement"].includes(statement.type)) return true;
+    if (statement.type === "expression_statement") {
+      const call = descendants(statement, "call_expression")[0];
+      return call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source);
+    }
+    if (statement.type === "if_statement") return ifTerminates(statement, fn, source);
+    return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source);
+  });
+}
 function directStatementIsReachable(node, block, fn, source) {
   const statements = directStatements(block);
   const containing = statements.find((statement) => containsNode(statement, node));
   if (containing === void 0) return false;
-  return !statements.some((statement) => statement.endIndex <= containing.startIndex && statementTerminates(statement, fn, source));
+  return !statements.some((statement) => {
+    if (statement.endIndex > containing.startIndex) return false;
+    if (statement.type === "goto_statement") return gotoBypassesNode(statement, node, fn, source);
+    return statementTerminates(statement, fn, source);
+  });
+}
+function gotoBypassesNode(statement, node, fn, source) {
+  const label = /\bgoto\s+([A-Za-z_]\w*)/.exec(sourceText(statement, source))?.[1];
+  if (label === void 0) return true;
+  const target = scopedDescendants(fn, "labeled_statement").find((candidate) => new RegExp(`^\\s*${escapeRegExp(label)}\\s*:`).test(sourceText(candidate, source)));
+  return target === void 0 || target.startIndex < statement.startIndex || target.startIndex > node.endIndex;
 }
 function isLoggingReceiver(call, source, imports) {
   const fn = call.childForFieldName("function");
@@ -21827,6 +21857,46 @@ function locallyDeclaredBefore(fn, name2, use, source) {
 }
 function bindingShadowsName(fn, name2, use, source) {
   return fn.receiverName === name2 || locallyDeclaredBefore(fn, name2, use, source);
+}
+function locallyShadowsParameter(fn, name2, use, source) {
+  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration.endIndex >= use.startIndex) continue;
+    const left = declaration.childForFieldName("left");
+    const scope = enclosingBlock(declaration);
+    if (left !== null && directlyAssignsIdentifier(left, name2, source) && scope !== null && (scope.id !== fn.body.id && containsNode(scope, use) || controlInitializerScopesUse(declaration, use, scope))) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "var_declaration")) {
+    if (declaration.endIndex >= use.startIndex) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope === null || scope.id === fn.body.id || !containsNode(scope, use)) continue;
+    if (new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) return true;
+  }
+  return false;
+}
+function controlInitializerScopesUse(declaration, use, enclosing) {
+  let current = declaration.parent;
+  while (current !== null && current.id !== enclosing.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
+      return containsNode(current, use);
+    }
+    current = current.parent;
+  }
+  return false;
+}
+function packageDeclaresName(fn, name2, source) {
+  let root = fn.node;
+  while (root.parent !== null) root = root.parent;
+  return root.namedChildren.some((declaration) => {
+    if (declaration.type === "function_declaration") {
+      const declared = declaration.childForFieldName("name");
+      return declared !== null && sourceText(declared, source) === name2;
+    }
+    if (declaration.type === "type_declaration") {
+      return descendants(declaration, "type_spec").some((spec) => sourceText(spec, source).trimStart().startsWith(`${name2} `));
+    }
+    if (declaration.type !== "var_declaration" && declaration.type !== "const_declaration") return false;
+    return new RegExp(`^(?:var|const)\\s+(?:${escapeRegExp(name2)}\\b|\\([\\s\\S]*?^\\s*${escapeRegExp(name2)}\\b)`, "m").test(sourceText(declaration, source));
+  });
 }
 function selectedMethod(call, source) {
   const fn = call.childForFieldName("function");
@@ -21916,17 +21986,32 @@ function insideNestedFunction(node, boundary) {
   }
   return false;
 }
-function changedAnchor(file, nodes) {
+function changedAnchor(file, nodes, currentRoot, previousRoot) {
   if (file.status === "repository" || file.status === "added") {
     const node = nodes[nodes.length - 1];
     return node === void 0 ? void 0 : { node, line: lineOf(node) };
   }
   for (const node of nodes) {
+    if (previousRoot !== void 0 && !semanticNodeChanged(node, currentRoot, previousRoot, file.current, file.previous)) continue;
     for (let line = lineOf(node); line <= node.endPosition.row + 1; line += 1) {
-      if (file.changedLines.has(line) && hasSemanticLeafOnLine(node, line)) return { node, line };
+      if (file.changedLines.has(line) && hasSemanticLeafOnLine(node, line) && (previousRoot !== void 0 || !hasCommentOnLine(currentRoot, line))) return { node, line };
     }
   }
   return void 0;
+}
+function semanticNodeChanged(node, currentRoot, previousRoot, current, previous) {
+  const signature = semanticText(node, current);
+  const currentCount = descendants(currentRoot, node.type).filter((candidate) => semanticText(candidate, current) === signature).length;
+  const previousCount = descendants(previousRoot, node.type).filter((candidate) => semanticText(candidate, previous) === signature).length;
+  return currentCount > previousCount;
+}
+function semanticText(node, source) {
+  if (node.type === "comment") return "";
+  if (node.childCount === 0) return sourceText(node, source).replace(/\s+/g, "");
+  return node.children.map((child) => semanticText(child, source)).join("");
+}
+function hasCommentOnLine(node, line) {
+  return descendants(node, "comment").some((comment) => line >= lineOf(comment) && line <= comment.endPosition.row + 1);
 }
 function hasSemanticLeafOnLine(node, line) {
   if (node.type === "comment" || line < lineOf(node) || line > node.endPosition.row + 1) return false;
@@ -22331,6 +22416,7 @@ async function discoverSources(ctx) {
     files.push({
       path: source.path,
       current: source.content,
+      ...change.previous === void 0 ? {} : { previous: change.previous },
       changedLines: change.changedLines,
       status: change.status
     });
@@ -22351,7 +22437,8 @@ async function changedSource(ctx, path) {
   if (head !== void 0 && !ctx.change?.worktree) args2.push(head);
   args2.push("--", path);
   const patch = await gitOutput(ctx.repoPath, args2);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  const previous = await gitOutput(ctx.repoPath, ["show", `${base}:${path}`]);
+  return { changedLines: changedLineNumbers(patch), status: "modified", previous };
 }
 async function existsAtRevision(repoPath, revision, path) {
   try {

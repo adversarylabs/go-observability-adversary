@@ -467,3 +467,93 @@ test("multiline classification and logger operands anchor the exact changed sema
     source(commentOnly, new Set([commentLine]), "modified"),
   ]), []);
 });
+
+test("binds context and panic provenance, proves reachability, and compares prior semantics", async () => {
+  const fakeContext = dapr
+    .replace("type rabbitMQ struct", "type fakeContext struct{}\nfunc (fakeContext) Err() error { return errors.New(\"custom\") }\n\ntype rabbitMQ struct")
+    .replace("if ctx.Err() != nil {", "ctx := fakeContext{}\n    if ctx.Err() != nil {");
+  assert.deepEqual(await cancellationEscalationSignals([source(fakeContext)]), []);
+
+  const ifInitFakeContext = dapr
+    .replace("type rabbitMQ struct", "type fakeContext struct{}\nfunc (fakeContext) Err() error { return errors.New(\"custom\") }\n\ntype rabbitMQ struct")
+    .replace("if ctx.Err() != nil {", "if ctx := (fakeContext{}); ctx.Err() != nil {");
+  assert.deepEqual(await cancellationEscalationSignals([source(ifInitFakeContext)]), []);
+
+  const reassignedContext = dapr.replace(
+    "err := handle(ctx)",
+    "ctx = context.Background()\n  err := handle(ctx)",
+  );
+  assert.equal((await cancellationEscalationSignals([source(reassignedContext)])).length, 1);
+
+  const gotoLogger = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `goto handled
+    r.logger.Errorf("error handling message: %v", err)
+  handled:`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(gotoLogger)]), []);
+
+  const packagePanic = dapr
+    .replace("type rabbitMQ struct", "func panic(any) {}\n\ntype rabbitMQ struct")
+    .replace(
+      'r.logger.Errorf("error handling message: %v", err)',
+      `if errors.Is(err, context.Canceled) { panic(err) }
+    r.logger.Errorf("error handling message: %v", err)`,
+    );
+  assert.equal((await cancellationEscalationSignals([source(packagePanic)])).length, 1);
+
+  const trailingPackagePanic = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { panic(err) }
+    r.logger.Errorf("error handling message: %v", err)`,
+  ) + "\nfunc panic(any) {}\n";
+  assert.equal((await cancellationEscalationSignals([source(trailingPackagePanic)])).length, 1);
+
+  const unreachableIntent = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `return err
+      r.logger.Debugf("context done; skipping ack/nack during shutdown")`,
+  ).replace("    if err := d.Nack(false, false); err != nil { return err }", "    _ = d");
+  assert.deepEqual(await cancellationEscalationSignals([source(unreachableIntent)]), []);
+
+  const exhaustiveSwitch = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `switch {
+    case errors.Is(err, context.Canceled): return
+    default: return
+    }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(exhaustiveSwitch)]), []);
+
+  const incompleteSwitch = exhaustiveSwitch.replace("    default: return", "    default: observeCancellation()");
+  assert.equal((await cancellationEscalationSignals([source(incompleteSwitch)])).length, 1);
+
+  const reachableGotoLabel = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `goto handled
+  handled:
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(reachableGotoLabel)])).length, 1);
+
+  const commentOnly = dapr.replace("if ctx.Err() != nil {", "if ctx.Err() != nil { // wording only");
+  const commentLine = commentOnly.split("\n").findIndex((line) => line.includes("wording only")) + 1;
+  assert.deepEqual(await cancellationEscalationSignals([{
+    ...source(commentOnly, new Set([commentLine]), "modified"),
+    previous: dapr,
+  }]), []);
+
+  const semanticAndComment = dapr.replace(
+    "if ctx.Err() != nil {",
+    "if errors.Is(err, context.Canceled) { // document the explicit class",
+  );
+  const semanticLine = semanticAndComment.split("\n").findIndex((line) => line.includes("explicit class")) + 1;
+  const changed = await cancellationEscalationSignals([{
+    ...source(semanticAndComment, new Set([semanticLine]), "modified"),
+    previous: dapr,
+  }]);
+  assert.equal(changed.length, 1);
+  assert.equal(changed[0]?.line, semanticLine);
+});

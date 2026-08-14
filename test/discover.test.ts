@@ -21,6 +21,7 @@ test("an unrelated edit does not surface a legacy metric finding", async () => {
   const discovery = await discoverSources(changedContext(repo, [path]));
   assert.equal(discovery.files[0]?.status, "modified");
   assert.deepEqual([...discovery.files[0]!.changedLines], [9]);
+  assert.equal(discovery.files[0]?.previous, legacyMetric("old diagnostic"));
 
   const analysis = await analyzeDiscovery(discovery);
   assert.deepEqual(analysis.signals.filter((signal) => signal.ruleId === ruleId), []);
