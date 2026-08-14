@@ -21525,7 +21525,7 @@ async function cancellationEscalationSignals(files) {
             if (result === void 0) continue;
             const guarded = nonNilGuardForResult(call, caller, result.name, file.current);
             if (guarded === void 0) continue;
-            const logger = directErrorLogger(guarded, call, caller, result.name, file.current, aliases);
+            const logger = directErrorLogger(guarded, call, caller, result.name, normal.kinds, file.current, aliases);
             if (logger === void 0) continue;
             const semantic = [normal.condition, normal.normalLog, normal.suppressedEffect, normal.returned, call, logger].filter((node) => node !== void 0);
             const anchor = changedAnchor(file, semantic, tree.rootNode, previousTree?.rootNode);
@@ -21635,6 +21635,7 @@ function normalCancellationReturns(fn, source, contextAlias, errorsAlias, import
     results.push({
       fn,
       errorName: cancellation.errorName,
+      kinds: cancellation.kinds,
       condition,
       returned,
       ...normalLog === void 0 ? {} : { normalLog },
@@ -21655,7 +21656,11 @@ function cancellationErrorName(condition, statement, fn, source, contextAlias, e
         const outer = parent.childForFieldName("condition");
         if (outer !== null) {
           const error = exactNonNilIdentifier(outer, source);
-          if (error !== void 0) return { errorName: error, errorGuard: parent };
+          if (error !== void 0) return {
+            errorName: error,
+            kinds: /* @__PURE__ */ new Set(["canceled", "deadline"]),
+            errorGuard: parent
+          };
         }
       }
       parent = parent.parent;
@@ -21668,11 +21673,13 @@ function cancellationErrorName(condition, statement, fn, source, contextAlias, e
   const escapedContext = escapeRegExp(contextAlias);
   const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
   const expression = new RegExp(
-    `^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(?:Canceled|DeadlineExceeded),?\\)$`
+    `^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(Canceled|DeadlineExceeded),?\\)$`
   );
-  const names = atoms.map((candidate) => expression.exec(candidate)?.[1]);
+  const matches = atoms.map((candidate) => expression.exec(candidate));
+  const names = matches.map((match) => match?.[1]);
   if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
-  return { errorName: names[0] };
+  const kinds = new Set(matches.map((match) => match[2] === "Canceled" ? "canceled" : "deadline"));
+  return { errorName: names[0], kinds };
 }
 function functionReceivesContext(fn, source, name2, contextAlias) {
   const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
@@ -21720,7 +21727,7 @@ function nonNilGuardForResult(call, caller, name2, source) {
   }
   return void 0;
 }
-function directErrorLogger(guard, resultCall, caller, errorName, source, aliases) {
+function directErrorLogger(guard, resultCall, caller, errorName, normalKinds, source, aliases) {
   const consequence = guard.childForFieldName("consequence");
   if (consequence === null) return void 0;
   for (const call of descendants(consequence, "call_expression")) {
@@ -21730,7 +21737,7 @@ function directErrorLogger(guard, resultCall, caller, errorName, source, aliases
     if (!isExpressionStatement(call, consequence) || !isDirectInBlock(call, consequence)) continue;
     if (!directStatementIsReachable(call, consequence, caller, source)) continue;
     if (bindingChangesBeforeUse(caller, errorName, resultCall.endIndex, call, source)) continue;
-    if (callerFiltersCancellation(consequence, call, caller, errorName, source, aliases)) continue;
+    if (callerFiltersCancellation(consequence, call, caller, errorName, normalKinds, source, aliases)) continue;
     return call;
   }
   return void 0;
@@ -21743,64 +21750,73 @@ function errorLoggerUsesResult(call, errorName, source, imports) {
   if (operand?.type !== "call_expression" || selectedMethod(operand, source) !== "WithError" || !isLoggingReceiver(operand, source, imports)) return false;
   return containsUnshadowedIdentifier(call, errorName, source);
 }
-function callerFiltersCancellation(block, logger, caller, errorName, source, aliases) {
+function callerFiltersCancellation(block, logger, caller, errorName, normalKinds, source, aliases) {
   if (aliases.context === void 0 || aliases.errors === void 0) return false;
-  return directStatements(block).some((statement) => {
-    if (statement.type !== "if_statement" || statement.endIndex >= logger.startIndex) return false;
+  const covered = /* @__PURE__ */ new Set();
+  for (const statement of directStatements(block)) {
+    if (statement.type !== "if_statement" || statement.endIndex >= logger.startIndex) continue;
     const condition = statement.childForFieldName("condition");
     const consequence = statement.childForFieldName("consequence");
-    if (condition === null || consequence === null || bindingShadowsName(caller, aliases.errors, condition, source) || bindingShadowsName(caller, aliases.context, condition, source)) return false;
-    return errorsIsCancellationName(condition, source, aliases.errors, aliases.context) === errorName && blockTerminates(consequence, caller, source);
-  });
+    if (condition === null || consequence === null || bindingShadowsName(caller, aliases.errors, condition, source) || bindingShadowsName(caller, aliases.context, condition, source)) continue;
+    const filter = errorsIsCancellation(condition, source, aliases.errors, aliases.context);
+    if (filter?.errorName !== errorName || !blockTerminates(consequence, caller, source, logger)) continue;
+    for (const kind of filter.kinds) covered.add(kind);
+  }
+  return [...normalKinds].every((kind) => covered.has(kind));
 }
-function errorsIsCancellationName(condition, source, errorsAlias, contextAlias) {
+function errorsIsCancellation(condition, source, errorsAlias, contextAlias) {
   const compact = sourceText(condition, source).replace(/\s+/g, "");
   const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
   const expression = new RegExp(
-    `^${escapeRegExp(errorsAlias)}\\.Is\\(([A-Za-z_]\\w*),${escapeRegExp(contextAlias)}\\.(?:Canceled|DeadlineExceeded),?\\)$`
+    `^${escapeRegExp(errorsAlias)}\\.Is\\(([A-Za-z_]\\w*),${escapeRegExp(contextAlias)}\\.(Canceled|DeadlineExceeded),?\\)$`
   );
-  const names = atoms.map((candidate) => expression.exec(candidate)?.[1]);
+  const matches = atoms.map((candidate) => expression.exec(candidate));
+  const names = matches.map((match) => match?.[1]);
   if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
-  return names[0];
+  const kinds = new Set(matches.map((match) => match[2] === "Canceled" ? "canceled" : "deadline"));
+  return { errorName: names[0], kinds };
 }
-function blockTerminates(block, fn, source) {
+function blockTerminates(block, fn, source, target) {
   for (const statement of directStatements(block)) {
-    if (statementTerminates(statement, fn, source)) return true;
+    if (statementTerminates(statement, fn, source, target)) return true;
   }
   return false;
 }
-function statementTerminates(statement, fn, source) {
-  if (["return_statement", "continue_statement", "break_statement", "goto_statement"].includes(statement.type)) return true;
+function statementTerminates(statement, fn, source, target) {
+  if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
+  if (statement.type === "goto_statement") return target === void 0 || gotoBypassesNode(statement, target, fn, source);
   if (statement.type === "expression_statement") {
     const call = descendants(statement, "call_expression")[0];
     if (call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source)) return true;
+    if (call !== void 0 && unshadowedOsExit(call, fn, source)) return true;
   }
-  if (statement.type === "if_statement") return ifTerminates(statement, fn, source);
-  return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source);
+  if (statement.type === "if_statement") return ifTerminates(statement, fn, source, target);
+  return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source, target);
 }
 function directStatements(block) {
   return block.namedChildren.find((child) => child.type === "statement_list")?.namedChildren ?? block.namedChildren;
 }
-function ifTerminates(statement, fn, source) {
+function ifTerminates(statement, fn, source, target) {
   const consequence = statement.childForFieldName("consequence");
   const alternative = statement.childForFieldName("alternative");
-  if (consequence === null || alternative === null || !blockTerminates(consequence, fn, source)) return false;
-  return alternative.type === "if_statement" ? ifTerminates(alternative, fn, source) : blockTerminates(alternative, fn, source);
+  if (consequence === null || alternative === null || !blockTerminates(consequence, fn, source, target)) return false;
+  return alternative.type === "if_statement" ? ifTerminates(alternative, fn, source, target) : blockTerminates(alternative, fn, source, target);
 }
-function switchTerminates(statement, fn, source) {
+function switchTerminates(statement, fn, source, target) {
   const cases = statement.namedChildren.filter((child) => child.type === "expression_case" || child.type === "default_case");
   if (cases.length === 0 || !cases.some((candidate) => candidate.type === "default_case")) return false;
-  return cases.every((candidate) => caseTerminates(candidate, fn, source));
+  return cases.every((candidate) => caseTerminates(candidate, fn, source, target));
 }
-function caseTerminates(candidate, fn, source) {
+function caseTerminates(candidate, fn, source, target) {
   return directStatements(candidate).some((statement) => {
-    if (["return_statement", "goto_statement"].includes(statement.type)) return true;
+    if (statement.type === "return_statement") return true;
+    if (statement.type === "goto_statement") return target === void 0 || gotoBypassesNode(statement, target, fn, source);
     if (statement.type === "expression_statement") {
       const call = descendants(statement, "call_expression")[0];
-      return call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source);
+      return call !== void 0 && (calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source) || unshadowedOsExit(call, fn, source));
     }
-    if (statement.type === "if_statement") return ifTerminates(statement, fn, source);
-    return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source);
+    if (statement.type === "if_statement") return ifTerminates(statement, fn, source, target);
+    return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source, target);
   });
 }
 function directStatementIsReachable(node, block, fn, source) {
@@ -21810,7 +21826,7 @@ function directStatementIsReachable(node, block, fn, source) {
   return !statements.some((statement) => {
     if (statement.endIndex > containing.startIndex) return false;
     if (statement.type === "goto_statement") return gotoBypassesNode(statement, node, fn, source);
-    return statementTerminates(statement, fn, source);
+    return statementTerminates(statement, fn, source, node);
   });
 }
 function gotoBypassesNode(statement, node, fn, source) {
@@ -21818,6 +21834,51 @@ function gotoBypassesNode(statement, node, fn, source) {
   if (label === void 0) return true;
   const target = scopedDescendants(fn, "labeled_statement").find((candidate) => new RegExp(`^\\s*${escapeRegExp(label)}\\s*:`).test(sourceText(candidate, source)));
   return target === void 0 || target.startIndex < statement.startIndex || target.startIndex > node.endIndex;
+}
+function unshadowedOsExit(call, fn, source) {
+  let functionNode = call.childForFieldName("function");
+  while (functionNode?.type === "parenthesized_expression" && functionNode.namedChildren.length === 1) {
+    functionNode = functionNode.namedChildren[0] ?? null;
+  }
+  if (functionNode?.type !== "selector_expression" || sourceText(functionNode.childForFieldName("field") ?? functionNode, source) !== "Exit") return false;
+  const operand = functionNode?.type === "selector_expression" ? functionNode.childForFieldName("operand") : null;
+  if (operand?.type !== "identifier") return false;
+  const alias = sourceText(operand, source);
+  let root = fn.node;
+  while (root.parent !== null) root = root.parent;
+  if (standardAliases(root, source).imports.get(alias) !== "os") return false;
+  return !localBindingShadowsAtUse(fn, alias, call, source);
+}
+function localBindingShadowsAtUse(fn, name2, use, source) {
+  if (fn.receiverName === name2) return true;
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return true;
+  const declarations = [
+    ...descendants(fn.body, "short_var_declaration"),
+    ...descendants(fn.body, "var_spec"),
+    ...descendants(fn.body, "const_spec")
+  ];
+  return declarations.some((declaration) => declaration.startIndex < use.startIndex && !insideNestedFunction(declaration, fn.body) && declarationNames(declaration, source).has(name2) && declarationScopeContainsUse(declaration, use));
+}
+function declarationNames(node, source) {
+  let candidate = node;
+  if (node.type === "short_var_declaration") {
+    candidate = node.childForFieldName("left") ?? node.namedChildren[0] ?? node;
+  }
+  const text = sourceText(candidate, source).split(/:=|=|\s+(?=[A-Za-z_*\[])/, 1)[0] ?? "";
+  return new Set(text.split(",").map((part) => part.trim()).filter((part) => /^[A-Za-z_]\w*$/.test(part)));
+}
+function declarationScopeContainsUse(declaration, use) {
+  const block = enclosingBlock(declaration);
+  if (block === null) return false;
+  let current = declaration.parent;
+  while (current !== null && current.id !== block.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
+      return containsNode(current, use);
+    }
+    current = current.parent;
+  }
+  return containsNode(block, use);
 }
 function isLoggingReceiver(call, source, imports) {
   const fn = call.childForFieldName("function");
@@ -21924,7 +21985,7 @@ function isCompositeLiteralKey(node) {
 function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
   for (const assignment of descendants(fn.body, "assignment_statement")) {
     if (assignment.startIndex <= startIndex || assignment.endIndex >= use.startIndex) continue;
-    if (insideNestedFunction(assignment, fn.body) && !immediatelyInvokedMutation(assignment, fn, name2, source)) continue;
+    if (insideNestedFunction(assignment, fn.body) && !immediatelyInvokedMutation(assignment, fn, name2, source) && !definitelyInvokedStoredMutation(assignment, fn, name2, use, source)) continue;
     const left = assignment.childForFieldName("left");
     if (left !== null && directlyAssignsIdentifier(left, name2, source)) return true;
   }
@@ -21949,6 +22010,7 @@ function immediatelyInvokedMutation(mutation, fn, name2, source) {
   if (literal === null || literal.type !== "func_literal") return false;
   const body2 = literal.childForFieldName("body");
   if (body2 === null) return false;
+  if (!isDirectInBlock(mutation, body2) || !directStatementIsReachable(mutation, body2, fn, source)) return false;
   let invocation = literal.parent;
   while (invocation !== null && invocation.type === "parenthesized_expression") invocation = invocation.parent;
   if (invocation?.type !== "call_expression" || !containsNode(invocation.childForFieldName("function") ?? invocation, literal) || insideNestedFunction(invocation, fn.body)) return false;
@@ -21956,6 +22018,41 @@ function immediatelyInvokedMutation(mutation, fn, name2, source) {
   if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
   const prefix = source.slice(body2.startIndex, mutation.startIndex);
   return !new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
+}
+function definitelyInvokedStoredMutation(mutation, fn, name2, use, source) {
+  let literal = mutation.parent;
+  while (literal !== null && literal.id !== fn.body.id && literal.type !== "func_literal") literal = literal.parent;
+  if (literal === null || literal.type !== "func_literal") return false;
+  const body2 = literal.childForFieldName("body");
+  if (body2 === null) return false;
+  if (!isDirectInBlock(mutation, body2) || !directStatementIsReachable(mutation, body2, fn, source)) return false;
+  const header = sourceText(literal, source).slice(0, Math.max(0, body2.startIndex - literal.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
+  const prefix = source.slice(body2.startIndex, mutation.startIndex);
+  if (new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix)) return false;
+  let declaration = literal.parent;
+  while (declaration !== null && declaration.type !== "short_var_declaration") {
+    if (["statement_list", "block"].includes(declaration.type)) return false;
+    declaration = declaration.parent;
+  }
+  if (declaration === null || declaration.endIndex >= use.startIndex) return false;
+  const left = declaration.childForFieldName("left");
+  const closureIdentifier = left?.type === "identifier" ? left : left?.type === "expression_list" && left.namedChildren.length === 1 && left.namedChildren[0]?.type === "identifier" ? left.namedChildren[0] : void 0;
+  const closureName = closureIdentifier === void 0 ? void 0 : sourceText(closureIdentifier, source);
+  const scope = enclosingBlock(declaration);
+  if (closureName === void 0 || scope === null || !containsNode(scope, use)) return false;
+  for (const invocation of descendants(scope, "call_expression")) {
+    if (invocation.startIndex <= declaration.endIndex || invocation.endIndex >= use.startIndex || insideNestedFunction(invocation, scope) || calledName(invocation, source) !== closureName) continue;
+    const statement = invocation.parent;
+    if (statement?.type !== "expression_statement" || !isDirectInBlock(invocation, scope) || !directStatementIsReachable(invocation, scope, fn, source)) continue;
+    const reassigned = descendants(scope, "assignment_statement").some((assignment) => {
+      if (assignment.startIndex <= declaration.endIndex || assignment.endIndex >= invocation.startIndex || insideNestedFunction(assignment, scope)) return false;
+      const assigned = assignment.childForFieldName("left");
+      return assigned !== null && directlyAssignsIdentifier(assigned, closureName, source);
+    });
+    if (!reassigned) return true;
+  }
+  return false;
 }
 function directlyAssignsIdentifier(node, name2, source) {
   if (node.type === "identifier" && sourceText(node, source) === name2) return true;

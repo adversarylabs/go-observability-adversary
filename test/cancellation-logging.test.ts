@@ -243,10 +243,120 @@ test("stays quiet when an aliased cancellation filter dominates a direct logger"
     .replaceAll("context.Context", "ctxpkg.Context")
     .replace(
       'r.logger.Errorf("error handling message: %v", err)',
-      `if errpkg.Is(err, ctxpkg.Canceled) { return }
+      `if errpkg.Is(err, ctxpkg.Canceled) || errpkg.Is(err, ctxpkg.DeadlineExceeded) { return }
     r.logger.Errorf("error handling message: %v", err)`,
     );
   assert.deepEqual(await cancellationEscalationSignals([source(filtered)]), []);
+});
+
+test("matches cancellation-kind coverage and terminal caller control flow", async () => {
+  const onlyCanceled = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { return }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  const onlyDeadline = onlyCanceled.replace("context.Canceled", "context.DeadlineExceeded");
+  assert.equal((await cancellationEscalationSignals([source(onlyCanceled)])).length, 1);
+  assert.equal((await cancellationEscalationSignals([source(onlyDeadline)])).length, 1);
+
+  const separateCoverage = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { return }
+    if errors.Is(err, context.DeadlineExceeded) { return }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(separateCoverage)]), []);
+
+  const canceledOnlyCallee = dapr.replace(
+    "if ctx.Err() != nil {",
+    "if errors.Is(err, context.Canceled) {",
+  );
+  const canceledOnlyFilter = canceledOnlyCallee.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { return }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(canceledOnlyFilter)]), []);
+
+  const gotoBeforeLogger = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) { goto logIt }
+  logIt:
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(gotoBeforeLogger)])).length, 1);
+});
+
+test("tracks definitely invoked stored closure mutations before logging", async () => {
+  const invoked = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `mutate := func() { err = errors.New("replacement") }
+    mutate()
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(invoked)]), []);
+
+  const uninvoked = invoked.replace("    mutate()\n", "    _ = mutate\n");
+  assert.equal((await cancellationEscalationSignals([source(uninvoked)])).length, 1);
+
+  const conditional = invoked.replace("    mutate()", "    if verbose { mutate() }")
+    .replace("type rabbitMQ struct", "var verbose bool\ntype rabbitMQ struct");
+  assert.equal((await cancellationEscalationSignals([source(conditional)])).length, 1);
+
+  const conditionalMutation = invoked.replace(
+    'func() { err = errors.New("replacement") }',
+    'func() { if verbose { err = errors.New("replacement") } }',
+  ).replace("type rabbitMQ struct", "var verbose bool\ntype rabbitMQ struct");
+  assert.equal((await cancellationEscalationSignals([source(conditionalMutation)])).length, 1);
+
+  const replaced = invoked.replace(
+    "    mutate()",
+    "    mutate = func() {}\n    mutate()",
+  );
+  assert.equal((await cancellationEscalationSignals([source(replaced)])).length, 1);
+});
+
+test("treats only an unshadowed imported os.Exit as terminal", async () => {
+  const withOs = dapr.replace('"errors"', '"errors"\n  "os"');
+  const exit = withOs.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) { os.Exit(0) }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(exit)]), []);
+
+  const aliased = exit.replace('"os"', 'sys "os"').replace("os.Exit(0)", "sys.Exit(0)");
+  assert.deepEqual(await cancellationEscalationSignals([source(aliased)]), []);
+
+  const parenthesized = exit.replace("os.Exit(0)", "(os.Exit)(0)");
+  assert.deepEqual(await cancellationEscalationSignals([source(parenthesized)]), []);
+
+  const fake = withOs
+    .replace("type rabbitMQ struct", "type fakeOS struct{}\nfunc (fakeOS) Exit(int) {}\n\ntype rabbitMQ struct")
+    .replace(
+      'r.logger.Errorf("error handling message: %v", err)',
+      `os := fakeOS{}
+    os.Exit(0)
+    r.logger.Errorf("error handling message: %v", err)`,
+    );
+  assert.equal((await cancellationEscalationSignals([source(fake)])).length, 1);
+
+  const siblingShadow = withOs
+    .replace("type rabbitMQ struct", "type fakeOS struct{}\nfunc (fakeOS) Exit(int) {}\n\ntype rabbitMQ struct")
+    .replace(
+      'r.logger.Errorf("error handling message: %v", err)',
+      `{ os := fakeOS{}; os.Exit(0) }
+    os.Exit(1)
+    r.logger.Errorf("error handling message: %v", err)`,
+    );
+  assert.deepEqual(await cancellationEscalationSignals([source(siblingShadow)]), []);
+
+  const partialExit = withOs.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { os.Exit(0) }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(partialExit)])).length, 1);
 });
 
 test("recognizes explicit errors.Is cancellation classification in the callee", async () => {
