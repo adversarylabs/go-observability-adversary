@@ -1,4 +1,5 @@
 import { domain } from "./domain.js";
+import { cancellationEscalationSignals } from "./cancellation-logging.js";
 import { failureCounterWithoutDenominatorSignals } from "./failure-rates.js";
 import { metricDurationUnitMismatchSignals } from "./metric-units.js";
 import { parseGo } from "./parser.js";
@@ -36,6 +37,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     const file = fileByPath.get(item.path);
     return file !== undefined && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await cancellationEscalationSignals(discovery.files));
 
   return {
     mode: discovery.mode,

@@ -10,6 +10,21 @@ export const domain: DomainDefinition = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.logging.normal-cancellation-as-error",
+      title: "Normal cancellation is re-logged as an error",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        `${count} normal cancellation path${count === 1 ? " is" : "s are"} re-escalated to error-level telemetry by a direct caller.`,
+      whyItMatters:
+        "Graceful shutdown is an expected lifecycle event; logging it as an error creates false incidents and trains operators to ignore real failures.",
+      impact:
+        "Shutdowns emit spurious error events even though the callee deliberately suppressed operational failure handling for cancellation.",
+      recommendation:
+        "Keep returning the cancellation error when the contract requires it, but filter context.Canceled and context.DeadlineExceeded before the caller's error-level logger.",
+    },
+    {
       id: "go-obs.metrics.failure-without-denominator",
       title: "A failure counter has no comparable event total",
       category: "observability",

@@ -3647,7 +3647,12 @@ var require_fast_uri = __commonJS({
     }
     function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-      const resolved = resolveComponent(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true);
+      const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+      const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+      if (baseMalformed || relativeMalformed) {
+        throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+      }
+      const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
@@ -3773,6 +3778,7 @@ var require_fast_uri = __commonJS({
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+    var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3806,6 +3812,20 @@ var require_fast_uri = __commonJS({
       if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
         parsed.error = "URI authority must not contain a literal backslash.";
         malformedAuthorityOrPort = true;
+      }
+      const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+      if (introducerMatch !== null) {
+        const region = introducerMatch[1];
+        const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+        if (normalizedRegion.length >= 2) {
+          if (normalizedRegion.slice(0, 2) !== "//") {
+            parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+            malformedAuthorityOrPort = true;
+          } else if (region.length !== normalizedRegion.length) {
+            parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+            malformedAuthorityOrPort = true;
+          }
+        }
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
@@ -17075,6 +17095,17 @@ var domain = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.logging.normal-cancellation-as-error",
+      title: "Normal cancellation is re-logged as an error",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} normal cancellation path${count === 1 ? " is" : "s are"} re-escalated to error-level telemetry by a direct caller.`,
+      whyItMatters: "Graceful shutdown is an expected lifecycle event; logging it as an error creates false incidents and trains operators to ignore real failures.",
+      impact: "Shutdowns emit spurious error events even though the callee deliberately suppressed operational failure handling for cancellation.",
+      recommendation: "Keep returning the cancellation error when the contract requires it, but filter context.Canceled and context.DeadlineExceeded before the caller's error-level logger."
+    },
+    {
       id: "go-obs.metrics.failure-without-denominator",
       title: "A failure counter has no comparable event total",
       category: "observability",
@@ -17291,8 +17322,8 @@ function recoverSwallowSignals(file) {
       /(?:_|\w+)\s*=\s*recover\s*\(\s*\)\s*$/,
       () => "recover result is discarded without telemetry."
     ).filter((s) => {
-      const lineText = file.current.split("\n")[s.line - 1] ?? "";
-      return !/\b(?:log|slog|logger|fmt)\./.test(lineText);
+      const lineText2 = file.current.split("\n")[s.line - 1] ?? "";
+      return !/\b(?:log|slog|logger|fmt)\./.test(lineText2);
     })
   );
   const seen = /* @__PURE__ */ new Set();
@@ -17433,277 +17464,6 @@ function registerInRequestSignals(file) {
     }
   }
   return signals;
-}
-
-// src/failure-rates.ts
-var FAILURE_TOKENS = /* @__PURE__ */ new Set(["error", "errors", "fail", "fails", "failed", "failure", "failures"]);
-var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution", "operation"]);
-function failureCounterWithoutDenominatorSignals(files) {
-  const byDirectory = /* @__PURE__ */ new Map();
-  for (const file of files) {
-    const directory = metricDirectory(file.path);
-    const definitions = byDirectory.get(directory) ?? [];
-    definitions.push(...counterDefinitions(file));
-    byDirectory.set(directory, definitions);
-  }
-  const signals = [];
-  for (const definitions of byDirectory.values()) {
-    for (const failure of definitions) {
-      if (failure.subject === null) continue;
-      const hasDenominator = definitions.some(
-        (candidate) => candidate !== failure && isDenominatorFor(candidate, failure.subject)
-      );
-      if (hasDenominator) continue;
-      signals.push({
-        ruleId: "go-obs.metrics.failure-without-denominator",
-        path: failure.path,
-        line: failure.line,
-        message: `Metric ${failure.metricName} counts failures without a comparable ${subjectName(failure.subject)} attempts or total counter.`,
-        snippet: failure.metricName,
-        data: {
-          metric: failure.metricName,
-          subject: failure.subject.join("_")
-        }
-      });
-    }
-  }
-  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
-}
-function counterDefinitions(file) {
-  const definitions = [];
-  const constructor = /\b(?:(?:prometheus|promauto|metric)\.)NewCounter(?:VecWithLabels|Vec|Func)?\s*\(/g;
-  let match;
-  while ((match = constructor.exec(file.current)) !== null) {
-    const openBrace = file.current.indexOf("{", constructor.lastIndex);
-    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
-    const optionsType = file.current.slice(constructor.lastIndex, openBrace).trim();
-    if (!/^(?:prometheus\.|metric\.)?CounterOpts$/.test(optionsType)) continue;
-    const body2 = balancedBody(file.current, openBrace, "{", "}");
-    if (body2 === null) continue;
-    const metricName = metricNameFromOptions(body2);
-    if (metricName === "") continue;
-    const tokens = metricTokens(metricName);
-    definitions.push({
-      path: file.path,
-      line: file.current.slice(0, match.index ?? 0).split("\n").length,
-      metricName,
-      subject: failureSubject(tokens),
-      denominatorTokens: denominatorTokens(tokens)
-    });
-  }
-  return definitions;
-}
-function metricNameFromOptions(body2) {
-  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
-  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
-  return literals.at(-1)?.[1] ?? "";
-}
-function metricTokens(metricName) {
-  const tokens = metricName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  if (tokens.at(-1) === "total") tokens.pop();
-  return tokens;
-}
-function failureSubject(tokens) {
-  if (!tokens.some((token) => FAILURE_TOKENS.has(token))) return null;
-  const subject = tokens.filter((token) => !FAILURE_TOKENS.has(token)).map(normalizeSubjectToken);
-  return subject.length === 0 ? null : subject;
-}
-function denominatorTokens(tokens) {
-  return tokens.map(normalizeSubjectToken);
-}
-function isDenominatorFor(candidate, subject) {
-  if (candidate.subject !== null) return false;
-  if (sameTokens(candidate.denominatorTokens, subject)) return true;
-  const withoutQualifier = candidate.denominatorTokens.filter(
-    (token) => !DENOMINATOR_TOKENS.has(token) || subject.includes(token)
-  );
-  return sameTokens(withoutQualifier, subject);
-}
-function normalizeSubjectToken(token) {
-  if (token.endsWith("ies") && token.length > 3) return `${token.slice(0, -3)}y`;
-  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
-  return token;
-}
-function sameTokens(left, right) {
-  return left.length === right.length && left.every((token, index) => token === right[index]);
-}
-function subjectName(subject) {
-  return subject.join(" ");
-}
-function balancedBody(source, openIndex, open2, close) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === void 0) break;
-    if (quote !== null) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\" && quote !== "`") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === open2) depth += 1;
-    if (character !== close) continue;
-    depth -= 1;
-    if (depth === 0) return source.slice(openIndex + 1, index);
-  }
-  return null;
-}
-function metricDirectory(path) {
-  const separator = path.lastIndexOf("/");
-  return separator === -1 ? "" : path.slice(0, separator);
-}
-
-// src/metric-units.ts
-function metricDurationUnitMismatchSignals(files) {
-  const definitions = /* @__PURE__ */ new Map();
-  for (const file of files) {
-    const directory = metricDirectory2(file.path);
-    const packageDefinitions = definitions.get(directory) ?? [];
-    for (const definition of metricDefinitions(file.current)) {
-      packageDefinitions.push({ ...definition, path: file.path });
-    }
-    definitions.set(directory, packageDefinitions);
-  }
-  const signals = [];
-  for (const file of files) {
-    const byVariable = /* @__PURE__ */ new Map();
-    for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
-      const candidates = byVariable.get(definition.variable) ?? [];
-      candidates.push(definition);
-      byVariable.set(definition.variable, candidates);
-    }
-    for (const candidates of byVariable.values()) {
-      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
-      if (definition === void 0) continue;
-      signals.push(...observationMismatches(file, definition));
-    }
-  }
-  return deduplicate(signals);
-}
-function metricDefinitions(source) {
-  const definitions = [];
-  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
-  let match;
-  while ((match = constructor.exec(source)) !== null) {
-    const variable = match[1];
-    if (variable === void 0) continue;
-    const openBrace = source.indexOf("{", constructor.lastIndex);
-    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
-    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
-    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
-    const body2 = balancedBody2(source, openBrace, "{", "}");
-    if (body2 === null) continue;
-    const metricName = metricNameFromOptions2(body2);
-    const unit = declaredDurationUnit(metricName);
-    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
-  }
-  return definitions;
-}
-function metricNameFromOptions2(body2) {
-  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
-  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
-  return literals.at(-1)?.[1] ?? "";
-}
-function declaredDurationUnit(metricName) {
-  const normalized = metricName.toLowerCase();
-  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
-    if (normalized.endsWith(`_${unit}`)) return unit;
-  }
-  return null;
-}
-function observationMismatches(file, definition) {
-  const variable = escapeRegExp(definition.variable);
-  const observe = new RegExp(
-    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
-    "g"
-  );
-  const signals = [];
-  let match;
-  while ((match = observe.exec(file.current)) !== null) {
-    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
-    if (openParen < (match.index ?? 0)) continue;
-    const argument = balancedBody2(file.current, openParen, "(", ")");
-    if (argument === null) continue;
-    const observedUnit = observedDurationUnit(argument);
-    if (observedUnit === null || observedUnit === definition.unit) continue;
-    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
-    signals.push({
-      ruleId: "go-obs.metrics.duration-unit-mismatch",
-      path: file.path,
-      line,
-      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
-      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
-      data: {
-        metric: definition.metricName,
-        declaredUnit: definition.unit,
-        observedUnit
-      }
-    });
-  }
-  return signals;
-}
-function observedDurationUnit(argument) {
-  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
-  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
-  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
-  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
-  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
-  return null;
-}
-function balancedBody2(source, openIndex, open2, close) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === void 0) break;
-    if (quote !== null) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\" && quote !== "`") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === open2) depth += 1;
-    if (character !== close) continue;
-    depth -= 1;
-    if (depth === 0) return source.slice(openIndex + 1, index);
-  }
-  return null;
-}
-function metricDirectory2(path) {
-  const separator = path.lastIndexOf("/");
-  return separator === -1 ? "" : path.slice(0, separator);
-}
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function deduplicate(signals) {
-  const seen = /* @__PURE__ */ new Set();
-  return signals.filter((signal) => {
-    const key = `${signal.path}:${signal.line}:${String(signal.data.metric)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 // src/parser.ts
@@ -21710,6 +21470,605 @@ async function parseGo(source) {
   if (tree === null) throw new Error("Tree-sitter returned no syntax tree");
   return tree;
 }
+function walk2(node, visit) {
+  const pending = [node];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === void 0) continue;
+    visit(current);
+    for (let index = current.namedChildCount - 1; index >= 0; index -= 1) {
+      const child = current.namedChild(index);
+      if (child !== null) pending.push(child);
+    }
+  }
+}
+function descendants(node, type) {
+  const result = [];
+  walk2(node, (candidate) => {
+    if (candidate.type === type) result.push(candidate);
+  });
+  return result;
+}
+function sourceText(node, source) {
+  return source.slice(node.startIndex, node.endIndex);
+}
+
+// src/cancellation-logging.ts
+var ERROR_LOG_METHODS = /* @__PURE__ */ new Set(["Error", "Errorf", "Errorw", "ErrorContext"]);
+var NORMAL_LOG_METHODS = /* @__PURE__ */ new Set(["Debug", "Debugf", "Debugw", "DebugContext", "Info", "Infof", "Infow", "InfoContext"]);
+var SUPPRESSED_EFFECT_METHODS = /* @__PURE__ */ new Set(["Ack", "Nack", "Commit", "Rollback", "Reject", "Requeue"]);
+var NORMAL_WORDS = /\b(?:cancel(?:ed|led|lation)?|context done|deadline|shutdown|shutting down|stopping|skip(?:ping)?|clos(?:e|ed|ing))\b/i;
+async function cancellationEscalationSignals(files) {
+  const signals = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const tree = await parseGo(file.current);
+    try {
+      if (tree.rootNode.hasError) continue;
+      const aliases = standardAliases(tree.rootNode, file.current);
+      if (aliases.context === void 0) continue;
+      const functions = functionInfos(tree.rootNode, file.current);
+      const normalReturns = functions.flatMap((fn) => normalCancellationReturns(
+        fn,
+        file.current,
+        aliases.context,
+        aliases.errors,
+        aliases.imports
+      ));
+      for (const normal of normalReturns) {
+        for (const caller of functions) {
+          if (caller.node.id === normal.fn.node.id) continue;
+          for (const call of scopedDescendants(caller, "call_expression")) {
+            if (!resolvesDirectly(call, caller, normal.fn, file.current)) continue;
+            const result = assignedResult(call, file.current);
+            if (result === void 0) continue;
+            const guarded = nonNilGuardForResult(call, caller, result.name, file.current);
+            if (guarded === void 0) continue;
+            const logger = directErrorLogger(guarded, result.name, file.current, aliases.imports);
+            if (logger === void 0) continue;
+            const semantic = [normal.condition, normal.normalLog, normal.suppressedEffect, normal.returned, call, logger].filter((node) => node !== void 0);
+            const anchor = changedAnchor(file, semantic);
+            if (anchor === void 0) continue;
+            signals.push({
+              ruleId: "go-obs.logging.normal-cancellation-as-error",
+              path: file.path,
+              line: lineOf(anchor),
+              message: `${normal.fn.name} classifies cancellation as normal shutdown, but ${caller.name} logs its returned error unconditionally at error level.`,
+              snippet: lineText(file.current, anchor),
+              data: {
+                helper: normal.fn.name,
+                caller: caller.name,
+                error: result.name,
+                errorLogLine: lineOf(logger),
+                scope: "same-file-direct-call"
+              }
+            });
+          }
+        }
+      }
+    } finally {
+      tree.delete();
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  return signals.filter((signal) => {
+    const key = `${signal.path}:${String(signal.data.errorLogLine)}:${String(signal.data.helper)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function functionInfos(root, source) {
+  const declared = descendants(root, "function_declaration").concat(descendants(root, "method_declaration")).flatMap((node) => {
+    const body2 = node.childForFieldName("body");
+    if (body2 === null) return [];
+    const header = sourceText(node, source).slice(0, Math.max(0, body2.startIndex - node.startIndex));
+    const method = /^func\s*\(\s*([A-Za-z_]\w*)\s+\*?([A-Za-z_]\w*)\s*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    if (method !== null) {
+      return [{ node, body: body2, name: method[3], receiverName: method[1], receiverType: method[2] }];
+    }
+    const plain = /^func\s+([A-Za-z_]\w*)\s*\(/.exec(header);
+    return plain === null ? [] : [{ node, body: body2, name: plain[1] }];
+  });
+  const invokedClosures = declared.flatMap((outer) => descendants(outer.body, "func_literal").flatMap((node) => {
+    const body2 = node.childForFieldName("body");
+    const invocation = node.parent;
+    if (body2 === null || invocation?.type !== "call_expression" || invocation.childForFieldName("function")?.id !== node.id) return [];
+    return [{
+      node,
+      body: body2,
+      name: `${outer.name} callback`,
+      ...outer.receiverName === void 0 ? {} : { receiverName: outer.receiverName },
+      ...outer.receiverType === void 0 ? {} : { receiverType: outer.receiverType }
+    }];
+  }));
+  return [...declared, ...invokedClosures];
+}
+function standardAliases(root, source) {
+  const aliases = { imports: /* @__PURE__ */ new Map() };
+  for (const spec of descendants(root, "import_spec")) {
+    const text = sourceText(spec, source).trim();
+    const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(text);
+    if (match === null) continue;
+    const path = match[2];
+    const alias = match[1] ?? path.split("/").pop();
+    if (alias === "_" || alias === ".") continue;
+    aliases.imports.set(alias, path);
+    if (path === "context") aliases.context = alias;
+    else if (path === "errors") aliases.errors = alias;
+  }
+  return aliases;
+}
+function normalCancellationReturns(fn, source, contextAlias, errorsAlias, imports) {
+  const results = [];
+  for (const statement of scopedDescendants(fn, "if_statement")) {
+    const condition = statement.childForFieldName("condition");
+    const consequence = statement.childForFieldName("consequence");
+    if (condition === null || consequence === null) continue;
+    const cancellation = cancellationErrorName(condition, statement, fn, source, contextAlias, errorsAlias);
+    if (cancellation === void 0) continue;
+    const returns = descendants(consequence, "return_statement").filter((returned2) => !insideNestedFunction(returned2, consequence));
+    const returned = returns.find((candidate) => exactReturnedIdentifier(candidate, source) === cancellation.errorName);
+    if (returned === void 0) continue;
+    const calls = descendants(consequence, "call_expression").filter((call) => !insideNestedFunction(call, consequence));
+    if (calls.some((call) => {
+      const method = selectedMethod(call, source);
+      return method !== void 0 && ERROR_LOG_METHODS.has(method);
+    }) || descendants(consequence, "call_expression").some((call) => calledName(call, source) === "panic")) continue;
+    const normalLog = calls.find((call) => {
+      const method = selectedMethod(call, source);
+      return method !== void 0 && NORMAL_LOG_METHODS.has(method) && isLoggingReceiver(call, source, imports) && isExpressionStatement(call, consequence) && NORMAL_WORDS.test(sourceText(call, source));
+    });
+    const effectScope = cancellation.errorGuard?.childForFieldName("consequence");
+    const suppressedEffect = effectScope === null || effectScope === void 0 ? void 0 : descendants(effectScope, "call_expression").find((call) => {
+      const method = selectedMethod(call, source);
+      return call.startIndex > statement.endIndex && !insideNestedFunction(call, effectScope) && method !== void 0 && SUPPRESSED_EFFECT_METHODS.has(method);
+    });
+    if (normalLog === void 0 && suppressedEffect === void 0) continue;
+    results.push({
+      fn,
+      errorName: cancellation.errorName,
+      condition,
+      returned,
+      ...normalLog === void 0 ? {} : { normalLog },
+      ...suppressedEffect === void 0 ? {} : { suppressedEffect }
+    });
+  }
+  return results;
+}
+function cancellationErrorName(condition, statement, fn, source, contextAlias, errorsAlias) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+  const contextMatch = new RegExp(`^(?:([A-Za-z_]\\w*)\\.Err\\(\\)!=nil|nil!=([A-Za-z_]\\w*)\\.Err\\(\\))$`).exec(compact);
+  if (contextMatch !== null) {
+    const contextName = contextMatch[1] ?? contextMatch[2];
+    if (!functionReceivesContext(fn, source, contextName, contextAlias)) return void 0;
+    let parent = statement.parent;
+    while (parent !== null && parent.id !== fn.node.id) {
+      if (parent.type === "if_statement") {
+        const outer = parent.childForFieldName("condition");
+        if (outer !== null) {
+          const error = exactNonNilIdentifier(outer, source);
+          if (error !== void 0) return { errorName: error, errorGuard: parent };
+        }
+      }
+      parent = parent.parent;
+    }
+    return void 0;
+  }
+  if (errorsAlias === void 0) return void 0;
+  if (locallyDeclaredBefore(fn, errorsAlias, condition, source)) return void 0;
+  const escapedErrors = escapeRegExp(errorsAlias);
+  const escapedContext = escapeRegExp(contextAlias);
+  const match = new RegExp(`^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(?:Canceled|DeadlineExceeded)\\)$`).exec(compact);
+  return match?.[1] === void 0 ? void 0 : { errorName: match[1] };
+}
+function functionReceivesContext(fn, source, name2, contextAlias) {
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  return new RegExp(`\\b${escapeRegExp(name2)}\\s+${escapeRegExp(contextAlias)}\\.Context\\b`).test(header);
+}
+function exactNonNilIdentifier(condition, source) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+  return /^(?:([A-Za-z_]\w*)!=nil|nil!=([A-Za-z_]\w*))$/.exec(compact)?.slice(1).find(Boolean);
+}
+function exactReturnedIdentifier(statement, source) {
+  const match = /^return\s+([A-Za-z_]\w*)$/.exec(sourceText(statement, source).trim());
+  return match?.[1];
+}
+function resolvesDirectly(call, caller, callee, source) {
+  const fn = call.childForFieldName("function");
+  if (fn === null) return false;
+  if (callee.receiverType === void 0) {
+    return fn.type === "identifier" && sourceText(fn, source) === callee.name && !locallyDeclaredBefore(caller, callee.name, call, source);
+  }
+  if (caller.receiverType !== callee.receiverType || caller.receiverName === void 0 || fn.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  const field = fn.childForFieldName("field");
+  return operand?.type === "identifier" && sourceText(operand, source) === caller.receiverName && !locallyDeclaredBefore(caller, caller.receiverName, call, source) && field !== null && sourceText(field, source) === callee.name;
+}
+function assignedResult(call, source) {
+  let assignment = call.parent;
+  while (assignment !== null && assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") {
+    if (assignment.type === "expression_statement" || assignment.type === "if_statement") return void 0;
+    assignment = assignment.parent;
+  }
+  if (assignment === null) return void 0;
+  const right = assignment.childForFieldName("right")?.namedChildren ?? [];
+  const left = assignment.childForFieldName("left")?.namedChildren ?? [];
+  if (right.length !== 1 || !containsNode(right[0], call) || left.length !== 1 || left[0]?.type !== "identifier") return void 0;
+  return { name: sourceText(left[0], source), assignment };
+}
+function nonNilGuardForResult(call, caller, name2, source) {
+  let parent = call.parent;
+  while (parent !== null && parent.id !== caller.node.id) {
+    if (parent.type === "if_statement") {
+      const condition = parent.childForFieldName("condition");
+      if (condition !== null && exactNonNilIdentifier(condition, source) === name2) return parent;
+    }
+    parent = parent.parent;
+  }
+  return void 0;
+}
+function directErrorLogger(guard, errorName, source, imports) {
+  const consequence = guard.childForFieldName("consequence");
+  if (consequence === null) return void 0;
+  for (const call of descendants(consequence, "call_expression")) {
+    if (insideNestedFunction(call, consequence)) continue;
+    const method = selectedMethod(call, source);
+    if (method === void 0 || !ERROR_LOG_METHODS.has(method) || !isLoggingReceiver(call, source, imports) || !containsIdentifier(call, errorName, source)) continue;
+    if (!isExpressionStatement(call, consequence) || !isDirectInBlock(call, consequence)) continue;
+    const prefix = source.slice(consequence.startIndex, call.startIndex);
+    if (/\.(?:Canceled|DeadlineExceeded)\b|\.Err\s*\(\s*\)|\.Is\s*\(/.test(prefix)) continue;
+    return call;
+  }
+  return void 0;
+}
+function isLoggingReceiver(call, source, imports) {
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  if (operand === null) return false;
+  const receiver = sourceText(operand, source);
+  if (operand.type !== "identifier") return /(?:^|\.)(?:log|logger|logging|slog|zap|zerolog)$/i.test(receiver);
+  const path = imports.get(receiver);
+  if (path !== void 0) {
+    return path === "log/slog" || /(?:^|\/)(?:log|logging|logrus|zap|zerolog|glog)(?:\/|$)/i.test(path);
+  }
+  return /^(?:log|logger|logging|slog|zap|zerolog)$/i.test(receiver);
+}
+function isDirectInBlock(node, block) {
+  let current = node.parent;
+  while (current !== null && current.id !== block.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement", "select_statement", "func_literal"].includes(current.type)) return false;
+    current = current.parent;
+  }
+  return current?.id === block.id;
+}
+function isExpressionStatement(node, block) {
+  let current = node.parent;
+  while (current !== null && current.id !== block.id) {
+    if (current.type === "expression_statement") return true;
+    if (["return_statement", "assignment_statement", "short_var_declaration", "defer_statement", "go_statement"].includes(current.type)) return false;
+    current = current.parent;
+  }
+  return false;
+}
+function locallyDeclaredBefore(fn, name2, use, source) {
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header) && name2 !== fn.receiverName) return true;
+  const prefix = source.slice(fn.body.startIndex, use.startIndex);
+  return new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
+}
+function selectedMethod(call, source) {
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return void 0;
+  const field = fn.childForFieldName("field");
+  return field === null ? void 0 : sourceText(field, source);
+}
+function calledName(call, source) {
+  const fn = call.childForFieldName("function");
+  return fn?.type === "identifier" ? sourceText(fn, source) : void 0;
+}
+function containsIdentifier(node, name2, source) {
+  return descendants(node, "identifier").some((candidate) => sourceText(candidate, source) === name2);
+}
+function containsNode(ancestor, node) {
+  return node.startIndex >= ancestor.startIndex && node.endIndex <= ancestor.endIndex;
+}
+function scopedDescendants(fn, type) {
+  return descendants(fn.body, type).filter((node) => !insideNestedFunction(node, fn.body));
+}
+function insideNestedFunction(node, boundary) {
+  let current = node.parent;
+  while (current !== null && current.id !== boundary.id) {
+    if (current.type === "func_literal") return true;
+    current = current.parent;
+  }
+  return false;
+}
+function changedAnchor(file, nodes) {
+  if (file.status === "repository" || file.status === "added") return nodes[nodes.length - 1];
+  return nodes.find((node) => file.changedLines.has(lineOf(node)));
+}
+function lineOf(node) {
+  return node.startPosition.row + 1;
+}
+function lineText(source, node) {
+  return (source.split("\n")[lineOf(node) - 1] ?? "").trim().slice(0, 300);
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// src/failure-rates.ts
+var FAILURE_TOKENS = /* @__PURE__ */ new Set(["error", "errors", "fail", "fails", "failed", "failure", "failures"]);
+var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution", "operation"]);
+function failureCounterWithoutDenominatorSignals(files) {
+  const byDirectory = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const directory = metricDirectory(file.path);
+    const definitions = byDirectory.get(directory) ?? [];
+    definitions.push(...counterDefinitions(file));
+    byDirectory.set(directory, definitions);
+  }
+  const signals = [];
+  for (const definitions of byDirectory.values()) {
+    for (const failure of definitions) {
+      if (failure.subject === null) continue;
+      const hasDenominator = definitions.some(
+        (candidate) => candidate !== failure && isDenominatorFor(candidate, failure.subject)
+      );
+      if (hasDenominator) continue;
+      signals.push({
+        ruleId: "go-obs.metrics.failure-without-denominator",
+        path: failure.path,
+        line: failure.line,
+        message: `Metric ${failure.metricName} counts failures without a comparable ${subjectName(failure.subject)} attempts or total counter.`,
+        snippet: failure.metricName,
+        data: {
+          metric: failure.metricName,
+          subject: failure.subject.join("_")
+        }
+      });
+    }
+  }
+  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
+}
+function counterDefinitions(file) {
+  const definitions = [];
+  const constructor = /\b(?:(?:prometheus|promauto|metric)\.)NewCounter(?:VecWithLabels|Vec|Func)?\s*\(/g;
+  let match;
+  while ((match = constructor.exec(file.current)) !== null) {
+    const openBrace = file.current.indexOf("{", constructor.lastIndex);
+    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
+    const optionsType = file.current.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.|metric\.)?CounterOpts$/.test(optionsType)) continue;
+    const body2 = balancedBody(file.current, openBrace, "{", "}");
+    if (body2 === null) continue;
+    const metricName = metricNameFromOptions(body2);
+    if (metricName === "") continue;
+    const tokens = metricTokens(metricName);
+    definitions.push({
+      path: file.path,
+      line: file.current.slice(0, match.index ?? 0).split("\n").length,
+      metricName,
+      subject: failureSubject(tokens),
+      denominatorTokens: denominatorTokens(tokens)
+    });
+  }
+  return definitions;
+}
+function metricNameFromOptions(body2) {
+  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
+  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
+  return literals.at(-1)?.[1] ?? "";
+}
+function metricTokens(metricName) {
+  const tokens = metricName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.at(-1) === "total") tokens.pop();
+  return tokens;
+}
+function failureSubject(tokens) {
+  if (!tokens.some((token) => FAILURE_TOKENS.has(token))) return null;
+  const subject = tokens.filter((token) => !FAILURE_TOKENS.has(token)).map(normalizeSubjectToken);
+  return subject.length === 0 ? null : subject;
+}
+function denominatorTokens(tokens) {
+  return tokens.map(normalizeSubjectToken);
+}
+function isDenominatorFor(candidate, subject) {
+  if (candidate.subject !== null) return false;
+  if (sameTokens(candidate.denominatorTokens, subject)) return true;
+  const withoutQualifier = candidate.denominatorTokens.filter(
+    (token) => !DENOMINATOR_TOKENS.has(token) || subject.includes(token)
+  );
+  return sameTokens(withoutQualifier, subject);
+}
+function normalizeSubjectToken(token) {
+  if (token.endsWith("ies") && token.length > 3) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
+  return token;
+}
+function sameTokens(left, right) {
+  return left.length === right.length && left.every((token, index) => token === right[index]);
+}
+function subjectName(subject) {
+  return subject.join(" ");
+}
+function balancedBody(source, openIndex, open2, close) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === void 0) break;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\" && quote !== "`") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === open2) depth += 1;
+    if (character !== close) continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+  return null;
+}
+function metricDirectory(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+
+// src/metric-units.ts
+function metricDurationUnitMismatchSignals(files) {
+  const definitions = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const directory = metricDirectory2(file.path);
+    const packageDefinitions = definitions.get(directory) ?? [];
+    for (const definition of metricDefinitions(file.current)) {
+      packageDefinitions.push({ ...definition, path: file.path });
+    }
+    definitions.set(directory, packageDefinitions);
+  }
+  const signals = [];
+  for (const file of files) {
+    const byVariable = /* @__PURE__ */ new Map();
+    for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
+      const candidates = byVariable.get(definition.variable) ?? [];
+      candidates.push(definition);
+      byVariable.set(definition.variable, candidates);
+    }
+    for (const candidates of byVariable.values()) {
+      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
+      if (definition === void 0) continue;
+      signals.push(...observationMismatches(file, definition));
+    }
+  }
+  return deduplicate(signals);
+}
+function metricDefinitions(source) {
+  const definitions = [];
+  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
+  let match;
+  while ((match = constructor.exec(source)) !== null) {
+    const variable = match[1];
+    if (variable === void 0) continue;
+    const openBrace = source.indexOf("{", constructor.lastIndex);
+    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
+    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
+    const body2 = balancedBody2(source, openBrace, "{", "}");
+    if (body2 === null) continue;
+    const metricName = metricNameFromOptions2(body2);
+    const unit = declaredDurationUnit(metricName);
+    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
+  }
+  return definitions;
+}
+function metricNameFromOptions2(body2) {
+  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
+  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
+  return literals.at(-1)?.[1] ?? "";
+}
+function declaredDurationUnit(metricName) {
+  const normalized = metricName.toLowerCase();
+  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
+    if (normalized.endsWith(`_${unit}`)) return unit;
+  }
+  return null;
+}
+function observationMismatches(file, definition) {
+  const variable = escapeRegExp2(definition.variable);
+  const observe = new RegExp(
+    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
+    "g"
+  );
+  const signals = [];
+  let match;
+  while ((match = observe.exec(file.current)) !== null) {
+    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
+    if (openParen < (match.index ?? 0)) continue;
+    const argument = balancedBody2(file.current, openParen, "(", ")");
+    if (argument === null) continue;
+    const observedUnit = observedDurationUnit(argument);
+    if (observedUnit === null || observedUnit === definition.unit) continue;
+    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
+    signals.push({
+      ruleId: "go-obs.metrics.duration-unit-mismatch",
+      path: file.path,
+      line,
+      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
+      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
+      data: {
+        metric: definition.metricName,
+        declaredUnit: definition.unit,
+        observedUnit
+      }
+    });
+  }
+  return signals;
+}
+function observedDurationUnit(argument) {
+  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
+  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
+  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
+  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
+  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
+  return null;
+}
+function balancedBody2(source, openIndex, open2, close) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === void 0) break;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\" && quote !== "`") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === open2) depth += 1;
+    if (character !== close) continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+  return null;
+}
+function metricDirectory2(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function deduplicate(signals) {
+  const seen = /* @__PURE__ */ new Set();
+  return signals.filter((signal) => {
+    const key = `${signal.path}:${signal.line}:${String(signal.data.metric)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
@@ -21742,6 +22101,7 @@ async function analyzeDiscovery(discovery) {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await cancellationEscalationSignals(discovery.files));
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
@@ -21977,7 +22337,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.8",
+    version: "0.0.9",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {
