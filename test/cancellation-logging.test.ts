@@ -315,6 +315,66 @@ test("only accepts a dominating terminating caller cancellation filter", async (
     r.logger.Errorf("error handling message: %v", err)`,
   );
   assert.deepEqual(await cancellationEscalationSignals([source(dominated)]), []);
+
+  const locallyShadowedContext = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `context := struct{ Canceled error }{errors.New("local marker")}
+    if errors.Is(err, context.Canceled) { return }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(locallyShadowedContext)])).length, 1);
+
+  const shadowedPanic = dapr.replace(
+    "func (r *rabbitMQ) listenMessages(ctx context.Context, d delivery) {",
+    "func (r *rabbitMQ) listenMessages(ctx context.Context, d delivery) {\n  panic := func(any) {}",
+  ).replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { panic(err) }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(shadowedPanic)])).length, 1);
+});
+
+test("requires real imported context and errors bindings for cancellation classification", async () => {
+  const localContext = dapr.replace(
+    "func (r *rabbitMQ) handleMessage(ctx context.Context, d delivery) error {",
+    `func (r *rabbitMQ) handleMessage(ctx context.Context, d delivery) error {
+  context := struct{ Canceled, DeadlineExceeded error }{errors.New("stop"), errors.New("deadline")}`,
+  ).replace(
+    "if ctx.Err() != nil {",
+    "if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {",
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(localContext)]), []);
+
+  const receiverErrors = dapr
+    .replaceAll("func (r *rabbitMQ)", "func (errors *rabbitMQ)")
+    .replaceAll("r.", "errors.")
+    .replace(
+      "if ctx.Err() != nil {",
+      "if errors.Is(err, context.Canceled) {",
+    );
+  assert.deepEqual(await cancellationEscalationSignals([source(receiverErrors)]), []);
+});
+
+test("ignores unreachable loggers and field labels that only spell the result name", async () => {
+  const unreachable = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `return
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(unreachable)]), []);
+
+  const fieldLabel = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    'r.logger.Errorf("error handling message: %v", struct{ err error }{err: other}.err)',
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(fieldLabel)]), []);
+
+  const evaluatedMapKey = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    'r.logger.Errorf("error handling message: %v", map[error]error{err: other})',
+  );
+  assert.equal((await cancellationEscalationSignals([source(evaluatedMapKey)])).length, 1);
 });
 
 test("binds the classified, returned, and logged error without shadow or reassignment", async () => {

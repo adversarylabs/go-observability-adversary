@@ -21660,7 +21660,7 @@ function cancellationErrorName(condition, statement, fn, source, contextAlias, e
     return void 0;
   }
   if (errorsAlias === void 0) return void 0;
-  if (locallyDeclaredBefore(fn, errorsAlias, condition, source)) return void 0;
+  if (bindingShadowsName(fn, errorsAlias, condition, source) || bindingShadowsName(fn, contextAlias, condition, source)) return void 0;
   const escapedErrors = escapeRegExp(errorsAlias);
   const escapedContext = escapeRegExp(contextAlias);
   const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
@@ -21725,6 +21725,7 @@ function directErrorLogger(guard, resultCall, caller, errorName, source, aliases
     const method = selectedMethod(call, source);
     if (method === void 0 || !ERROR_LOG_METHODS.has(method) || !errorLoggerUsesResult(call, errorName, source, aliases.imports)) continue;
     if (!isExpressionStatement(call, consequence) || !isDirectInBlock(call, consequence)) continue;
+    if (!directStatementIsReachable(call, consequence, caller, source)) continue;
     if (bindingChangesBeforeUse(caller, errorName, resultCall.endIndex, call, source)) continue;
     if (callerFiltersCancellation(consequence, call, caller, errorName, source, aliases)) continue;
     return call;
@@ -21745,8 +21746,8 @@ function callerFiltersCancellation(block, logger, caller, errorName, source, ali
     if (statement.type !== "if_statement" || statement.endIndex >= logger.startIndex) return false;
     const condition = statement.childForFieldName("condition");
     const consequence = statement.childForFieldName("consequence");
-    if (condition === null || consequence === null || locallyDeclaredBefore(caller, aliases.errors, condition, source)) return false;
-    return errorsIsCancellationName(condition, source, aliases.errors, aliases.context) === errorName && blockTerminates(consequence, source);
+    if (condition === null || consequence === null || bindingShadowsName(caller, aliases.errors, condition, source) || bindingShadowsName(caller, aliases.context, condition, source)) return false;
+    return errorsIsCancellationName(condition, source, aliases.errors, aliases.context) === errorName && blockTerminates(consequence, caller, source);
   });
 }
 function errorsIsCancellationName(condition, source, errorsAlias, contextAlias) {
@@ -21759,26 +21760,34 @@ function errorsIsCancellationName(condition, source, errorsAlias, contextAlias) 
   if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
   return names[0];
 }
-function blockTerminates(block, source) {
+function blockTerminates(block, fn, source) {
   for (const statement of directStatements(block)) {
-    if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
-    if (statement.type === "expression_statement") {
-      const call = descendants(statement, "call_expression")[0];
-      if (call !== void 0 && calledName(call, source) === "panic") return true;
-    }
-    if (statement.type !== "if_statement" || !ifTerminates(statement, source)) continue;
-    return true;
+    if (statementTerminates(statement, fn, source)) return true;
   }
   return false;
+}
+function statementTerminates(statement, fn, source) {
+  if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
+  if (statement.type === "expression_statement") {
+    const call = descendants(statement, "call_expression")[0];
+    if (call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source)) return true;
+  }
+  return statement.type === "if_statement" && ifTerminates(statement, fn, source);
 }
 function directStatements(block) {
   return block.namedChildren.find((child) => child.type === "statement_list")?.namedChildren ?? block.namedChildren;
 }
-function ifTerminates(statement, source) {
+function ifTerminates(statement, fn, source) {
   const consequence = statement.childForFieldName("consequence");
   const alternative = statement.childForFieldName("alternative");
-  if (consequence === null || alternative === null || !blockTerminates(consequence, source)) return false;
-  return alternative.type === "if_statement" ? ifTerminates(alternative, source) : blockTerminates(alternative, source);
+  if (consequence === null || alternative === null || !blockTerminates(consequence, fn, source)) return false;
+  return alternative.type === "if_statement" ? ifTerminates(alternative, fn, source) : blockTerminates(alternative, fn, source);
+}
+function directStatementIsReachable(node, block, fn, source) {
+  const statements = directStatements(block);
+  const containing = statements.find((statement) => containsNode(statement, node));
+  if (containing === void 0) return false;
+  return !statements.some((statement) => statement.endIndex <= containing.startIndex && statementTerminates(statement, fn, source));
 }
 function isLoggingReceiver(call, source, imports) {
   const fn = call.childForFieldName("function");
@@ -21816,6 +21825,9 @@ function locallyDeclaredBefore(fn, name2, use, source) {
   const prefix = source.slice(fn.body.startIndex, use.startIndex);
   return new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
 }
+function bindingShadowsName(fn, name2, use, source) {
+  return fn.receiverName === name2 || locallyDeclaredBefore(fn, name2, use, source);
+}
 function selectedMethod(call, source) {
   const fn = call.childForFieldName("function");
   if (fn?.type !== "selector_expression") return void 0;
@@ -21828,8 +21840,16 @@ function calledName(call, source) {
 }
 function containsUnshadowedIdentifier(node, name2, source) {
   return descendants(node, "identifier").some(
-    (candidate) => sourceText(candidate, source) === name2 && !insideNestedFunction(candidate, node)
+    (candidate) => sourceText(candidate, source) === name2 && !insideNestedFunction(candidate, node) && !isCompositeLiteralKey(candidate)
   );
+}
+function isCompositeLiteralKey(node) {
+  const literal = node.parent;
+  const keyed = literal?.parent;
+  if (literal?.type !== "literal_element" || keyed?.type !== "keyed_element" || keyed.namedChildren[0]?.id !== literal.id) return false;
+  const values = keyed.parent;
+  const composite = values?.parent;
+  return values?.type === "literal_value" && composite?.type === "composite_literal" && composite.namedChildren[0]?.type === "struct_type";
 }
 function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
   for (const assignment of descendants(fn.body, "assignment_statement")) {
