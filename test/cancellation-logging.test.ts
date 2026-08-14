@@ -123,6 +123,25 @@ test("supports aliased context/errors and direct plain-function calls", async ()
   assert.equal((await cancellationEscalationSignals([source(plain)])).length, 1);
 });
 
+test("binds stdlib cancellation classifiers to their lexical scope", async () => {
+  const classified = dapr.replace(
+    "if ctx.Err() != nil {",
+    "if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {",
+  );
+  const siblingShadow = classified.replace(
+    "  err := handle(ctx)",
+    "  { errors := struct{}{}; _ = errors }\n  err := handle(ctx)",
+  );
+  assert.equal((await cancellationEscalationSignals([source(siblingShadow)])).length, 1);
+
+  const activeShadow = classified.replace(
+    "  err := handle(ctx)",
+    `  errors := struct{ Is func(error, error) bool }{Is: func(error, error) bool { return true }}
+  err := handle(ctx)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(activeShadow)]), []);
+});
+
 test("requires changed semantic evidence and ignores comment-only locality", async () => {
   const lines = dapr.split("\n");
   const cancellationLine = lines.findIndex((line) => line.includes("ctx.Err")) + 1;
@@ -144,6 +163,24 @@ test("requires changed semantic evidence and ignores comment-only locality", asy
   assert.deepEqual(await cancellationEscalationSignals([
     source(withComment, new Set([commentLine]), "modified"),
   ]), []);
+});
+
+test("binds changed logger locality to the corresponding declaration", async () => {
+  const previous = dapr.replace(
+    '    r.logger.Errorf("error handling message: %v", err)',
+    "    _ = err",
+  ) + `
+func (r *rabbitMQ) unrelated(err error) {
+  r.logger.Errorf("error handling message: %v", err)
+}
+`;
+  const loggerLine = dapr.split("\n").findIndex((line) => line.includes("error handling message")) + 1;
+  const signals = await cancellationEscalationSignals([{
+    ...source(dapr, new Set([loggerLine]), "modified"),
+    previous,
+  }]);
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0]?.line, loggerLine);
 });
 
 test("does not resolve interface, cross-file, or multi-hop calls", async () => {

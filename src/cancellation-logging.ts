@@ -560,7 +560,7 @@ function locallyDeclaredBefore(fn: FunctionInfo, name: string, use: Node, source
 }
 
 function bindingShadowsName(fn: FunctionInfo, name: string, use: Node, source: string): boolean {
-  return fn.receiverName === name || locallyDeclaredBefore(fn, name, use, source);
+  return localBindingShadowsAtUse(fn, name, use, source);
 }
 
 function locallyShadowsParameter(fn: FunctionInfo, name: string, use: Node, source: string): boolean {
@@ -804,10 +804,78 @@ function changedAnchor(
 }
 
 function semanticNodeChanged(node: Node, currentRoot: Node, previousRoot: Node, current: string, previous: string): boolean {
-  const signature = semanticText(node, current);
-  const currentCount = descendants(currentRoot, node.type).filter((candidate) => semanticText(candidate, current) === signature).length;
-  const previousCount = descendants(previousRoot, node.type).filter((candidate) => semanticText(candidate, previous) === signature).length;
-  return currentCount > previousCount;
+  const previousNode = correspondingPreviousNode(node, currentRoot, previousRoot, current, previous);
+  return previousNode === undefined || previousNode.type !== node.type ||
+    semanticText(node, current) !== semanticText(previousNode, previous);
+}
+
+/**
+ * Match evidence to the same named declaration and comment-insensitive AST
+ * path in the base revision. File-wide signature counts can confuse identical
+ * logger calls in unrelated functions, and line numbers move under edits.
+ */
+function correspondingPreviousNode(
+  node: Node,
+  currentRoot: Node,
+  previousRoot: Node,
+  current: string,
+  previous: string,
+): Node | undefined {
+  const owner = enclosingNamedDeclaration(node) ?? currentRoot;
+  const identity = declarationIdentity(owner, current);
+  if (identity === undefined) return undefined;
+  const previousOwner = owner.type === "source_file"
+    ? previousRoot
+    : descendants(previousRoot, owner.type).find((candidate) =>
+      declarationIdentity(candidate, previous) === identity
+    );
+  if (previousOwner === undefined) return undefined;
+
+  const path: number[] = [];
+  let currentNode = node;
+  while (currentNode.id !== owner.id) {
+    const parent = currentNode.parent;
+    if (parent === null) return undefined;
+    const siblings = semanticNamedChildren(parent);
+    const index = siblings.findIndex((candidate) => candidate.id === currentNode.id);
+    if (index < 0) return undefined;
+    path.unshift(index);
+    currentNode = parent;
+  }
+
+  let previousNode = previousOwner;
+  for (const index of path) {
+    const candidate = semanticNamedChildren(previousNode)[index];
+    if (candidate === undefined) return undefined;
+    previousNode = candidate;
+  }
+  return previousNode;
+}
+
+function enclosingNamedDeclaration(node: Node): Node | undefined {
+  let current: Node | null = node;
+  while (current !== null) {
+    if (["method_declaration", "function_declaration", "type_spec"].includes(current.type)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function declarationIdentity(node: Node, source: string): string | undefined {
+  if (node.type === "source_file") return "source_file";
+  const name = node.childForFieldName("name");
+  if (name === null) return undefined;
+  if (node.type === "method_declaration") {
+    const body = node.childForFieldName("body");
+    const header = sourceText(node, source).slice(0, Math.max(0, (body?.startIndex ?? node.endIndex) - node.startIndex));
+    const method = /^func\s*\(\s*[A-Za-z_]\w*\s+\*?([A-Za-z_]\w*)\s*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    return method === null ? undefined : `${node.type}:${method[1]}.${method[2]}`;
+  }
+  return `${node.type}:${sourceText(name, source)}`;
+}
+
+function semanticNamedChildren(node: Node): Node[] {
+  return node.namedChildren.filter((child) => child.type !== "comment");
 }
 
 function semanticText(node: Node, source: string): string {

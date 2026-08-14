@@ -21917,7 +21917,7 @@ function locallyDeclaredBefore(fn, name2, use, source) {
   return new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
 }
 function bindingShadowsName(fn, name2, use, source) {
-  return fn.receiverName === name2 || locallyDeclaredBefore(fn, name2, use, source);
+  return localBindingShadowsAtUse(fn, name2, use, source);
 }
 function locallyShadowsParameter(fn, name2, use, source) {
   for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
@@ -22097,10 +22097,58 @@ function changedAnchor(file, nodes, currentRoot, previousRoot) {
   return void 0;
 }
 function semanticNodeChanged(node, currentRoot, previousRoot, current, previous) {
-  const signature = semanticText(node, current);
-  const currentCount = descendants(currentRoot, node.type).filter((candidate) => semanticText(candidate, current) === signature).length;
-  const previousCount = descendants(previousRoot, node.type).filter((candidate) => semanticText(candidate, previous) === signature).length;
-  return currentCount > previousCount;
+  const previousNode = correspondingPreviousNode(node, currentRoot, previousRoot, current, previous);
+  return previousNode === void 0 || previousNode.type !== node.type || semanticText(node, current) !== semanticText(previousNode, previous);
+}
+function correspondingPreviousNode(node, currentRoot, previousRoot, current, previous) {
+  const owner = enclosingNamedDeclaration(node) ?? currentRoot;
+  const identity = declarationIdentity(owner, current);
+  if (identity === void 0) return void 0;
+  const previousOwner = owner.type === "source_file" ? previousRoot : descendants(previousRoot, owner.type).find(
+    (candidate) => declarationIdentity(candidate, previous) === identity
+  );
+  if (previousOwner === void 0) return void 0;
+  const path = [];
+  let currentNode = node;
+  while (currentNode.id !== owner.id) {
+    const parent = currentNode.parent;
+    if (parent === null) return void 0;
+    const siblings = semanticNamedChildren(parent);
+    const index = siblings.findIndex((candidate) => candidate.id === currentNode.id);
+    if (index < 0) return void 0;
+    path.unshift(index);
+    currentNode = parent;
+  }
+  let previousNode = previousOwner;
+  for (const index of path) {
+    const candidate = semanticNamedChildren(previousNode)[index];
+    if (candidate === void 0) return void 0;
+    previousNode = candidate;
+  }
+  return previousNode;
+}
+function enclosingNamedDeclaration(node) {
+  let current = node;
+  while (current !== null) {
+    if (["method_declaration", "function_declaration", "type_spec"].includes(current.type)) return current;
+    current = current.parent;
+  }
+  return void 0;
+}
+function declarationIdentity(node, source) {
+  if (node.type === "source_file") return "source_file";
+  const name2 = node.childForFieldName("name");
+  if (name2 === null) return void 0;
+  if (node.type === "method_declaration") {
+    const body2 = node.childForFieldName("body");
+    const header = sourceText(node, source).slice(0, Math.max(0, (body2?.startIndex ?? node.endIndex) - node.startIndex));
+    const method = /^func\s*\(\s*[A-Za-z_]\w*\s+\*?([A-Za-z_]\w*)\s*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    return method === null ? void 0 : `${node.type}:${method[1]}.${method[2]}`;
+  }
+  return `${node.type}:${sourceText(name2, source)}`;
+}
+function semanticNamedChildren(node) {
+  return node.namedChildren.filter((child) => child.type !== "comment");
 }
 function semanticText(node, source) {
   if (node.type === "comment") return "";
