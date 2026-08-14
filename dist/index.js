@@ -21524,7 +21524,7 @@ async function cancellationEscalationSignals(files) {
             if (result === void 0) continue;
             const guarded = nonNilGuardForResult(call, caller, result.name, file.current);
             if (guarded === void 0) continue;
-            const logger = directErrorLogger(guarded, result.name, file.current, aliases.imports);
+            const logger = directErrorLogger(guarded, call, caller, result.name, file.current, aliases);
             if (logger === void 0) continue;
             const semantic = [normal.condition, normal.normalLog, normal.suppressedEffect, normal.returned, call, logger].filter((node) => node !== void 0);
             const anchor = changedAnchor(file, semantic);
@@ -21532,9 +21532,9 @@ async function cancellationEscalationSignals(files) {
             signals.push({
               ruleId: "go-obs.logging.normal-cancellation-as-error",
               path: file.path,
-              line: lineOf(anchor),
+              line: anchor.line,
               message: `${normal.fn.name} classifies cancellation as normal shutdown, but ${caller.name} logs its returned error unconditionally at error level.`,
-              snippet: lineText(file.current, anchor),
+              snippet: lineText(file.current, anchor.line),
               data: {
                 helper: normal.fn.name,
                 caller: caller.name,
@@ -21608,7 +21608,11 @@ function normalCancellationReturns(fn, source, contextAlias, errorsAlias, import
     const cancellation = cancellationErrorName(condition, statement, fn, source, contextAlias, errorsAlias);
     if (cancellation === void 0) continue;
     const returns = descendants(consequence, "return_statement").filter((returned2) => !insideNestedFunction(returned2, consequence));
-    const returned = returns.find((candidate) => exactReturnedIdentifier(candidate, source) === cancellation.errorName);
+    const returned = returns.find((candidate) => {
+      if (exactReturnedIdentifier(candidate, source) !== cancellation.errorName) return false;
+      const provenanceStart = cancellation.errorGuard?.childForFieldName("condition")?.endIndex ?? condition.endIndex;
+      return !bindingChangesBeforeUse(fn, cancellation.errorName, provenanceStart, candidate, source);
+    });
     if (returned === void 0) continue;
     const calls = descendants(consequence, "call_expression").filter((call) => !insideNestedFunction(call, consequence));
     if (calls.some((call) => {
@@ -21659,8 +21663,13 @@ function cancellationErrorName(condition, statement, fn, source, contextAlias, e
   if (locallyDeclaredBefore(fn, errorsAlias, condition, source)) return void 0;
   const escapedErrors = escapeRegExp(errorsAlias);
   const escapedContext = escapeRegExp(contextAlias);
-  const match = new RegExp(`^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(?:Canceled|DeadlineExceeded)\\)$`).exec(compact);
-  return match?.[1] === void 0 ? void 0 : { errorName: match[1] };
+  const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
+  const expression = new RegExp(
+    `^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(?:Canceled|DeadlineExceeded),?\\)$`
+  );
+  const names = atoms.map((candidate) => expression.exec(candidate)?.[1]);
+  if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
+  return { errorName: names[0] };
 }
 function functionReceivesContext(fn, source, name2, contextAlias) {
   const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
@@ -21708,19 +21717,68 @@ function nonNilGuardForResult(call, caller, name2, source) {
   }
   return void 0;
 }
-function directErrorLogger(guard, errorName, source, imports) {
+function directErrorLogger(guard, resultCall, caller, errorName, source, aliases) {
   const consequence = guard.childForFieldName("consequence");
   if (consequence === null) return void 0;
   for (const call of descendants(consequence, "call_expression")) {
     if (insideNestedFunction(call, consequence)) continue;
     const method = selectedMethod(call, source);
-    if (method === void 0 || !ERROR_LOG_METHODS.has(method) || !isLoggingReceiver(call, source, imports) || !containsIdentifier(call, errorName, source)) continue;
+    if (method === void 0 || !ERROR_LOG_METHODS.has(method) || !errorLoggerUsesResult(call, errorName, source, aliases.imports)) continue;
     if (!isExpressionStatement(call, consequence) || !isDirectInBlock(call, consequence)) continue;
-    const prefix = source.slice(consequence.startIndex, call.startIndex);
-    if (/\.(?:Canceled|DeadlineExceeded)\b|\.Err\s*\(\s*\)|\.Is\s*\(/.test(prefix)) continue;
+    if (bindingChangesBeforeUse(caller, errorName, resultCall.endIndex, call, source)) continue;
+    if (callerFiltersCancellation(consequence, call, caller, errorName, source, aliases)) continue;
     return call;
   }
   return void 0;
+}
+function errorLoggerUsesResult(call, errorName, source, imports) {
+  if (isLoggingReceiver(call, source, imports) && containsUnshadowedIdentifier(call, errorName, source)) return true;
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  if (operand?.type !== "call_expression" || selectedMethod(operand, source) !== "WithError" || !isLoggingReceiver(operand, source, imports)) return false;
+  return containsUnshadowedIdentifier(call, errorName, source);
+}
+function callerFiltersCancellation(block, logger, caller, errorName, source, aliases) {
+  if (aliases.context === void 0 || aliases.errors === void 0) return false;
+  return directStatements(block).some((statement) => {
+    if (statement.type !== "if_statement" || statement.endIndex >= logger.startIndex) return false;
+    const condition = statement.childForFieldName("condition");
+    const consequence = statement.childForFieldName("consequence");
+    if (condition === null || consequence === null || locallyDeclaredBefore(caller, aliases.errors, condition, source)) return false;
+    return errorsIsCancellationName(condition, source, aliases.errors, aliases.context) === errorName && blockTerminates(consequence, source);
+  });
+}
+function errorsIsCancellationName(condition, source, errorsAlias, contextAlias) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "");
+  const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
+  const expression = new RegExp(
+    `^${escapeRegExp(errorsAlias)}\\.Is\\(([A-Za-z_]\\w*),${escapeRegExp(contextAlias)}\\.(?:Canceled|DeadlineExceeded),?\\)$`
+  );
+  const names = atoms.map((candidate) => expression.exec(candidate)?.[1]);
+  if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
+  return names[0];
+}
+function blockTerminates(block, source) {
+  for (const statement of directStatements(block)) {
+    if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
+    if (statement.type === "expression_statement") {
+      const call = descendants(statement, "call_expression")[0];
+      if (call !== void 0 && calledName(call, source) === "panic") return true;
+    }
+    if (statement.type !== "if_statement" || !ifTerminates(statement, source)) continue;
+    return true;
+  }
+  return false;
+}
+function directStatements(block) {
+  return block.namedChildren.find((child) => child.type === "statement_list")?.namedChildren ?? block.namedChildren;
+}
+function ifTerminates(statement, source) {
+  const consequence = statement.childForFieldName("consequence");
+  const alternative = statement.childForFieldName("alternative");
+  if (consequence === null || alternative === null || !blockTerminates(consequence, source)) return false;
+  return alternative.type === "if_statement" ? ifTerminates(alternative, source) : blockTerminates(alternative, source);
 }
 function isLoggingReceiver(call, source, imports) {
   const fn = call.childForFieldName("function");
@@ -21768,8 +21826,58 @@ function calledName(call, source) {
   const fn = call.childForFieldName("function");
   return fn?.type === "identifier" ? sourceText(fn, source) : void 0;
 }
-function containsIdentifier(node, name2, source) {
+function containsUnshadowedIdentifier(node, name2, source) {
+  return descendants(node, "identifier").some(
+    (candidate) => sourceText(candidate, source) === name2 && !insideNestedFunction(candidate, node)
+  );
+}
+function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
+  for (const assignment of descendants(fn.body, "assignment_statement")) {
+    if (assignment.startIndex <= startIndex || assignment.endIndex >= use.startIndex) continue;
+    if (insideNestedFunction(assignment, fn.body) && !immediatelyInvokedMutation(assignment, fn, name2, source)) continue;
+    const left = assignment.childForFieldName("left");
+    if (left !== null && containsIdentifierNamed(left, name2, source)) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
+    const left = declaration.childForFieldName("left");
+    if (left === null || !containsIdentifierNamed(left, name2, source)) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope !== null && containsNode(scope, use)) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "var_declaration")) {
+    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
+    if (!new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope !== null && containsNode(scope, use)) return true;
+  }
+  return false;
+}
+function immediatelyInvokedMutation(mutation, fn, name2, source) {
+  let literal = mutation.parent;
+  while (literal !== null && literal.id !== fn.body.id && literal.type !== "func_literal") literal = literal.parent;
+  if (literal === null || literal.type !== "func_literal") return false;
+  const body2 = literal.childForFieldName("body");
+  if (body2 === null) return false;
+  let invocation = literal.parent;
+  while (invocation !== null && invocation.type === "parenthesized_expression") invocation = invocation.parent;
+  if (invocation?.type !== "call_expression" || !containsNode(invocation.childForFieldName("function") ?? invocation, literal) || insideNestedFunction(invocation, fn.body)) return false;
+  const header = sourceText(literal, source).slice(0, Math.max(0, body2.startIndex - literal.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
+  const prefix = source.slice(body2.startIndex, mutation.startIndex);
+  return !new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
+}
+function containsIdentifierNamed(node, name2, source) {
+  if (node.type === "identifier" && sourceText(node, source) === name2) return true;
   return descendants(node, "identifier").some((candidate) => sourceText(candidate, source) === name2);
+}
+function enclosingBlock(node) {
+  let current = node.parent;
+  while (current !== null) {
+    if (current.type === "block") return current;
+    current = current.parent;
+  }
+  return null;
 }
 function containsNode(ancestor, node) {
   return node.startIndex >= ancestor.startIndex && node.endIndex <= ancestor.endIndex;
@@ -21786,14 +21894,64 @@ function insideNestedFunction(node, boundary) {
   return false;
 }
 function changedAnchor(file, nodes) {
-  if (file.status === "repository" || file.status === "added") return nodes[nodes.length - 1];
-  return nodes.find((node) => file.changedLines.has(lineOf(node)));
+  if (file.status === "repository" || file.status === "added") {
+    const node = nodes[nodes.length - 1];
+    return node === void 0 ? void 0 : { node, line: lineOf(node) };
+  }
+  for (const node of nodes) {
+    for (let line = lineOf(node); line <= node.endPosition.row + 1; line += 1) {
+      if (file.changedLines.has(line) && hasSemanticLeafOnLine(node, line)) return { node, line };
+    }
+  }
+  return void 0;
+}
+function hasSemanticLeafOnLine(node, line) {
+  if (node.type === "comment" || line < lineOf(node) || line > node.endPosition.row + 1) return false;
+  const children = node.namedChildren.filter(
+    (child) => child.type !== "comment" && line >= lineOf(child) && line <= child.endPosition.row + 1
+  );
+  if (children.length === 0) return node.namedChildCount === 0;
+  return children.some((child) => hasSemanticLeafOnLine(child, line));
 }
 function lineOf(node) {
   return node.startPosition.row + 1;
 }
-function lineText(source, node) {
-  return (source.split("\n")[lineOf(node) - 1] ?? "").trim().slice(0, 300);
+function lineText(source, line) {
+  return (source.split("\n")[line - 1] ?? "").trim().slice(0, 300);
+}
+function splitTopLevelOr(value) {
+  const parts2 = [];
+  let depth = 0;
+  let start2 = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1;
+    else if (value[index] === ")") depth -= 1;
+    else if (depth === 0 && value[index] === "|" && value[index + 1] === "|") {
+      parts2.push(value.slice(start2, index));
+      start2 = index + 2;
+      index += 1;
+    }
+  }
+  parts2.push(value.slice(start2));
+  return parts2.filter((part) => part.length > 0);
+}
+function stripOuterParentheses(value) {
+  let current = value;
+  while (current.startsWith("(") && current.endsWith(")")) {
+    let depth = 0;
+    let enclosesAll = true;
+    for (let index = 0; index < current.length; index += 1) {
+      if (current[index] === "(") depth += 1;
+      else if (current[index] === ")") depth -= 1;
+      if (depth === 0 && index < current.length - 1) {
+        enclosesAll = false;
+        break;
+      }
+    }
+    if (!enclosesAll) break;
+    current = current.slice(1, -1);
+  }
+  return current;
 }
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

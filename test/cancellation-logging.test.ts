@@ -271,3 +271,130 @@ test("recognizes explicit errors.Is cancellation classification in the callee", 
   );
   assert.deepEqual(await cancellationEscalationSignals([source(shadowed)]), []);
 });
+
+test("supports combined cancellation classification and WithError logger chains", async () => {
+  const combined = dapr.replace(
+    "if ctx.Err() != nil {",
+    "if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {",
+  );
+  assert.equal((await cancellationEscalationSignals([source(combined)])).length, 1);
+
+  const chained = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    'r.logger.WithError(err).Errorf("error handling message")',
+  );
+  assert.equal((await cancellationEscalationSignals([source(chained)])).length, 1);
+
+  const resultInFormatArgument = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    'r.logger.WithError(other).Errorf("error handling message: %v", err)',
+  );
+  assert.equal((await cancellationEscalationSignals([source(resultInFormatArgument)])).length, 1);
+});
+
+test("only accepts a dominating terminating caller cancellation filter", async () => {
+  const nested = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if verbose {
+      if errors.Is(err, context.Canceled) { return }
+    }
+    r.logger.Errorf("error handling message: %v", err)`,
+  ).replace("type rabbitMQ struct { logger Logger }", "var verbose bool\ntype rabbitMQ struct { logger Logger }");
+  assert.equal((await cancellationEscalationSignals([source(nested)])).length, 1);
+
+  const observing = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) { observeCancellation() }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(observing)])).length, 1);
+
+  const dominated = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) { return }
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  assert.deepEqual(await cancellationEscalationSignals([source(dominated)]), []);
+});
+
+test("binds the classified, returned, and logged error without shadow or reassignment", async () => {
+  const shadowedReturn = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `r.logger.Debugf("context done; cleanup failed")
+      err := errors.New("cleanup failed")
+      return err`,
+  );
+  const reassignedReturn = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `r.logger.Debugf("context done; cleanup failed")
+      err = cleanup()
+      return err`,
+  );
+  const callerReassignment = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `err = cleanup()
+    r.logger.Errorf("error handling message: %v", err)`,
+  );
+  const invokedReassignment = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `r.logger.Debugf("context done; cleanup failed")
+      func() { err = cleanup() }()
+      return err`,
+  );
+  const nestedParameter = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    'r.logger.Errorf("error handling message: %v", func(err error) error { return err }(other))',
+  );
+  for (const current of [shadowedReturn, reassignedReturn, callerReassignment, invokedReassignment, nestedParameter]) {
+    assert.deepEqual(await cancellationEscalationSignals([source(current)]), []);
+  }
+
+  const nestedParameterDoesNotRebindOuter = dapr.replace(
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      return err`,
+    `r.logger.Debugf("context done; skipping ack/nack during shutdown")
+      func(err error) { _ = err }(other)
+      return err`,
+  );
+  assert.equal((await cancellationEscalationSignals([source(nestedParameterDoesNotRebindOuter)])).length, 1);
+});
+
+test("multiline classification and logger operands anchor the exact changed semantic line", async () => {
+  const classification = dapr.replace(
+    "if ctx.Err() != nil {",
+    `if errors.Is(
+      err,
+      context.Canceled,
+    ) {`,
+  );
+  const classificationLine = classification.split("\n")
+    .findIndex((line) => line.includes("context.Canceled")) + 1;
+  const classificationSignals = await cancellationEscalationSignals([
+    source(classification, new Set([classificationLine]), "modified"),
+  ]);
+  assert.equal(classificationSignals.length, 1);
+  assert.equal(classificationSignals[0]?.line, classificationLine);
+
+  const logger = dapr.replace(
+    'r.logger.Errorf("error handling message: %v", err)',
+    `r.logger.Errorf(
+      "error handling message: %v",
+      err,
+    )`,
+  );
+  const loggerLine = logger.split("\n").findIndex((line) => line.trim() === "err,") + 1;
+  const loggerSignals = await cancellationEscalationSignals([
+    source(logger, new Set([loggerLine]), "modified"),
+  ]);
+  assert.equal(loggerSignals.length, 1);
+  assert.equal(loggerSignals[0]?.line, loggerLine);
+
+  const commentOnly = logger.replace('      "error handling message: %v",', '      // wording only\n      "error handling message: %v",');
+  const commentLine = commentOnly.split("\n").findIndex((line) => line.includes("wording only")) + 1;
+  assert.deepEqual(await cancellationEscalationSignals([
+    source(commentOnly, new Set([commentLine]), "modified"),
+  ]), []);
+});
