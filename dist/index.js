@@ -3647,7 +3647,12 @@ var require_fast_uri = __commonJS({
     }
     function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-      const resolved = resolveComponent(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true);
+      const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+      const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+      if (baseMalformed || relativeMalformed) {
+        throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+      }
+      const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
@@ -3773,6 +3778,7 @@ var require_fast_uri = __commonJS({
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+    var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3806,6 +3812,20 @@ var require_fast_uri = __commonJS({
       if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
         parsed.error = "URI authority must not contain a literal backslash.";
         malformedAuthorityOrPort = true;
+      }
+      const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+      if (introducerMatch !== null) {
+        const region = introducerMatch[1];
+        const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+        if (normalizedRegion.length >= 2) {
+          if (normalizedRegion.slice(0, 2) !== "//") {
+            parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+            malformedAuthorityOrPort = true;
+          } else if (region.length !== normalizedRegion.length) {
+            parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+            malformedAuthorityOrPort = true;
+          }
+        }
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
@@ -17075,6 +17095,17 @@ var domain = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.logging.normal-cancellation-as-error",
+      title: "Normal cancellation is re-logged as an error",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} normal cancellation path${count === 1 ? " is" : "s are"} re-escalated to error-level telemetry by a direct caller.`,
+      whyItMatters: "Graceful shutdown is an expected lifecycle event; logging it as an error creates false incidents and trains operators to ignore real failures.",
+      impact: "Shutdowns emit spurious error events even though the callee deliberately suppressed operational failure handling for cancellation.",
+      recommendation: "Keep returning the cancellation error when the contract requires it, but filter context.Canceled and context.DeadlineExceeded before the caller's error-level logger."
+    },
+    {
       id: "go-obs.metrics.failure-without-denominator",
       title: "A failure counter has no comparable event total",
       category: "observability",
@@ -17291,8 +17322,8 @@ function recoverSwallowSignals(file) {
       /(?:_|\w+)\s*=\s*recover\s*\(\s*\)\s*$/,
       () => "recover result is discarded without telemetry."
     ).filter((s) => {
-      const lineText = file.current.split("\n")[s.line - 1] ?? "";
-      return !/\b(?:log|slog|logger|fmt)\./.test(lineText);
+      const lineText2 = file.current.split("\n")[s.line - 1] ?? "";
+      return !/\b(?:log|slog|logger|fmt)\./.test(lineText2);
     })
   );
   const seen = /* @__PURE__ */ new Set();
@@ -17433,277 +17464,6 @@ function registerInRequestSignals(file) {
     }
   }
   return signals;
-}
-
-// src/failure-rates.ts
-var FAILURE_TOKENS = /* @__PURE__ */ new Set(["error", "errors", "fail", "fails", "failed", "failure", "failures"]);
-var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution", "operation"]);
-function failureCounterWithoutDenominatorSignals(files) {
-  const byDirectory = /* @__PURE__ */ new Map();
-  for (const file of files) {
-    const directory = metricDirectory(file.path);
-    const definitions = byDirectory.get(directory) ?? [];
-    definitions.push(...counterDefinitions(file));
-    byDirectory.set(directory, definitions);
-  }
-  const signals = [];
-  for (const definitions of byDirectory.values()) {
-    for (const failure of definitions) {
-      if (failure.subject === null) continue;
-      const hasDenominator = definitions.some(
-        (candidate) => candidate !== failure && isDenominatorFor(candidate, failure.subject)
-      );
-      if (hasDenominator) continue;
-      signals.push({
-        ruleId: "go-obs.metrics.failure-without-denominator",
-        path: failure.path,
-        line: failure.line,
-        message: `Metric ${failure.metricName} counts failures without a comparable ${subjectName(failure.subject)} attempts or total counter.`,
-        snippet: failure.metricName,
-        data: {
-          metric: failure.metricName,
-          subject: failure.subject.join("_")
-        }
-      });
-    }
-  }
-  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
-}
-function counterDefinitions(file) {
-  const definitions = [];
-  const constructor = /\b(?:(?:prometheus|promauto|metric)\.)NewCounter(?:VecWithLabels|Vec|Func)?\s*\(/g;
-  let match;
-  while ((match = constructor.exec(file.current)) !== null) {
-    const openBrace = file.current.indexOf("{", constructor.lastIndex);
-    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
-    const optionsType = file.current.slice(constructor.lastIndex, openBrace).trim();
-    if (!/^(?:prometheus\.|metric\.)?CounterOpts$/.test(optionsType)) continue;
-    const body2 = balancedBody(file.current, openBrace, "{", "}");
-    if (body2 === null) continue;
-    const metricName = metricNameFromOptions(body2);
-    if (metricName === "") continue;
-    const tokens = metricTokens(metricName);
-    definitions.push({
-      path: file.path,
-      line: file.current.slice(0, match.index ?? 0).split("\n").length,
-      metricName,
-      subject: failureSubject(tokens),
-      denominatorTokens: denominatorTokens(tokens)
-    });
-  }
-  return definitions;
-}
-function metricNameFromOptions(body2) {
-  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
-  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
-  return literals.at(-1)?.[1] ?? "";
-}
-function metricTokens(metricName) {
-  const tokens = metricName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  if (tokens.at(-1) === "total") tokens.pop();
-  return tokens;
-}
-function failureSubject(tokens) {
-  if (!tokens.some((token) => FAILURE_TOKENS.has(token))) return null;
-  const subject = tokens.filter((token) => !FAILURE_TOKENS.has(token)).map(normalizeSubjectToken);
-  return subject.length === 0 ? null : subject;
-}
-function denominatorTokens(tokens) {
-  return tokens.map(normalizeSubjectToken);
-}
-function isDenominatorFor(candidate, subject) {
-  if (candidate.subject !== null) return false;
-  if (sameTokens(candidate.denominatorTokens, subject)) return true;
-  const withoutQualifier = candidate.denominatorTokens.filter(
-    (token) => !DENOMINATOR_TOKENS.has(token) || subject.includes(token)
-  );
-  return sameTokens(withoutQualifier, subject);
-}
-function normalizeSubjectToken(token) {
-  if (token.endsWith("ies") && token.length > 3) return `${token.slice(0, -3)}y`;
-  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
-  return token;
-}
-function sameTokens(left, right) {
-  return left.length === right.length && left.every((token, index) => token === right[index]);
-}
-function subjectName(subject) {
-  return subject.join(" ");
-}
-function balancedBody(source, openIndex, open2, close) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === void 0) break;
-    if (quote !== null) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\" && quote !== "`") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === open2) depth += 1;
-    if (character !== close) continue;
-    depth -= 1;
-    if (depth === 0) return source.slice(openIndex + 1, index);
-  }
-  return null;
-}
-function metricDirectory(path) {
-  const separator = path.lastIndexOf("/");
-  return separator === -1 ? "" : path.slice(0, separator);
-}
-
-// src/metric-units.ts
-function metricDurationUnitMismatchSignals(files) {
-  const definitions = /* @__PURE__ */ new Map();
-  for (const file of files) {
-    const directory = metricDirectory2(file.path);
-    const packageDefinitions = definitions.get(directory) ?? [];
-    for (const definition of metricDefinitions(file.current)) {
-      packageDefinitions.push({ ...definition, path: file.path });
-    }
-    definitions.set(directory, packageDefinitions);
-  }
-  const signals = [];
-  for (const file of files) {
-    const byVariable = /* @__PURE__ */ new Map();
-    for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
-      const candidates = byVariable.get(definition.variable) ?? [];
-      candidates.push(definition);
-      byVariable.set(definition.variable, candidates);
-    }
-    for (const candidates of byVariable.values()) {
-      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
-      if (definition === void 0) continue;
-      signals.push(...observationMismatches(file, definition));
-    }
-  }
-  return deduplicate(signals);
-}
-function metricDefinitions(source) {
-  const definitions = [];
-  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
-  let match;
-  while ((match = constructor.exec(source)) !== null) {
-    const variable = match[1];
-    if (variable === void 0) continue;
-    const openBrace = source.indexOf("{", constructor.lastIndex);
-    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
-    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
-    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
-    const body2 = balancedBody2(source, openBrace, "{", "}");
-    if (body2 === null) continue;
-    const metricName = metricNameFromOptions2(body2);
-    const unit = declaredDurationUnit(metricName);
-    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
-  }
-  return definitions;
-}
-function metricNameFromOptions2(body2) {
-  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
-  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
-  return literals.at(-1)?.[1] ?? "";
-}
-function declaredDurationUnit(metricName) {
-  const normalized = metricName.toLowerCase();
-  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
-    if (normalized.endsWith(`_${unit}`)) return unit;
-  }
-  return null;
-}
-function observationMismatches(file, definition) {
-  const variable = escapeRegExp(definition.variable);
-  const observe = new RegExp(
-    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
-    "g"
-  );
-  const signals = [];
-  let match;
-  while ((match = observe.exec(file.current)) !== null) {
-    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
-    if (openParen < (match.index ?? 0)) continue;
-    const argument = balancedBody2(file.current, openParen, "(", ")");
-    if (argument === null) continue;
-    const observedUnit = observedDurationUnit(argument);
-    if (observedUnit === null || observedUnit === definition.unit) continue;
-    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
-    signals.push({
-      ruleId: "go-obs.metrics.duration-unit-mismatch",
-      path: file.path,
-      line,
-      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
-      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
-      data: {
-        metric: definition.metricName,
-        declaredUnit: definition.unit,
-        observedUnit
-      }
-    });
-  }
-  return signals;
-}
-function observedDurationUnit(argument) {
-  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
-  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
-  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
-  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
-  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
-  return null;
-}
-function balancedBody2(source, openIndex, open2, close) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === void 0) break;
-    if (quote !== null) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\" && quote !== "`") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === open2) depth += 1;
-    if (character !== close) continue;
-    depth -= 1;
-    if (depth === 0) return source.slice(openIndex + 1, index);
-  }
-  return null;
-}
-function metricDirectory2(path) {
-  const separator = path.lastIndexOf("/");
-  return separator === -1 ? "" : path.slice(0, separator);
-}
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function deduplicate(signals) {
-  const seen = /* @__PURE__ */ new Set();
-  return signals.filter((signal) => {
-    const key = `${signal.path}:${signal.line}:${String(signal.data.metric)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 // src/parser.ts
@@ -21710,6 +21470,1016 @@ async function parseGo(source) {
   if (tree === null) throw new Error("Tree-sitter returned no syntax tree");
   return tree;
 }
+function walk2(node, visit) {
+  const pending = [node];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === void 0) continue;
+    visit(current);
+    for (let index = current.namedChildCount - 1; index >= 0; index -= 1) {
+      const child = current.namedChild(index);
+      if (child !== null) pending.push(child);
+    }
+  }
+}
+function descendants(node, type) {
+  const result = [];
+  walk2(node, (candidate) => {
+    if (candidate.type === type) result.push(candidate);
+  });
+  return result;
+}
+function sourceText(node, source) {
+  return source.slice(node.startIndex, node.endIndex);
+}
+
+// src/cancellation-logging.ts
+var ERROR_LOG_METHODS = /* @__PURE__ */ new Set(["Error", "Errorf", "Errorw", "ErrorContext"]);
+var NORMAL_LOG_METHODS = /* @__PURE__ */ new Set(["Debug", "Debugf", "Debugw", "DebugContext", "Info", "Infof", "Infow", "InfoContext"]);
+var SUPPRESSED_EFFECT_METHODS = /* @__PURE__ */ new Set(["Ack", "Nack", "Commit", "Rollback", "Reject", "Requeue"]);
+var NORMAL_WORDS = /\b(?:cancel(?:ed|led|lation)?|context done|deadline|shutdown|shutting down|stopping|skip(?:ping)?|clos(?:e|ed|ing))\b/i;
+async function cancellationEscalationSignals(files) {
+  const signals = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const tree = await parseGo(file.current);
+    const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+    try {
+      if (tree.rootNode.hasError) continue;
+      const aliases = standardAliases(tree.rootNode, file.current);
+      if (aliases.context === void 0) continue;
+      const functions = functionInfos(tree.rootNode, file.current);
+      const normalReturns = functions.flatMap((fn) => normalCancellationReturns(
+        fn,
+        file.current,
+        aliases.context,
+        aliases.errors,
+        aliases.imports
+      ));
+      for (const normal of normalReturns) {
+        for (const caller of functions) {
+          if (caller.node.id === normal.fn.node.id) continue;
+          for (const call of scopedDescendants(caller, "call_expression")) {
+            if (!resolvesDirectly(call, caller, normal.fn, file.current)) continue;
+            const result = assignedResult(call, file.current);
+            if (result === void 0) continue;
+            const guarded = nonNilGuardForResult(call, caller, result.name, file.current);
+            if (guarded === void 0) continue;
+            const logger = directErrorLogger(guarded, call, caller, result.name, normal.kinds, file.current, aliases);
+            if (logger === void 0) continue;
+            const semantic = [normal.condition, normal.normalLog, normal.suppressedEffect, normal.returned, call, logger].filter((node) => node !== void 0);
+            const anchor = changedAnchor(file, semantic, tree.rootNode, previousTree?.rootNode);
+            if (anchor === void 0) continue;
+            signals.push({
+              ruleId: "go-obs.logging.normal-cancellation-as-error",
+              path: file.path,
+              line: anchor.line,
+              message: `${normal.fn.name} classifies cancellation as normal shutdown, but ${caller.name} logs its returned error unconditionally at error level.`,
+              snippet: lineText(file.current, anchor.line),
+              data: {
+                helper: normal.fn.name,
+                caller: caller.name,
+                error: result.name,
+                errorLogLine: lineOf(logger),
+                scope: "same-file-direct-call"
+              }
+            });
+          }
+        }
+      }
+    } finally {
+      previousTree?.delete();
+      tree.delete();
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  return signals.filter((signal) => {
+    const key = `${signal.path}:${String(signal.data.errorLogLine)}:${String(signal.data.helper)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function functionInfos(root, source) {
+  const declared = descendants(root, "function_declaration").concat(descendants(root, "method_declaration")).flatMap((node) => {
+    const body2 = node.childForFieldName("body");
+    if (body2 === null) return [];
+    const header = sourceText(node, source).slice(0, Math.max(0, body2.startIndex - node.startIndex));
+    const method = /^func\s*\(\s*([A-Za-z_]\w*)\s+\*?([A-Za-z_]\w*)\s*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    if (method !== null) {
+      return [{ node, body: body2, name: method[3], receiverName: method[1], receiverType: method[2] }];
+    }
+    const plain = /^func\s+([A-Za-z_]\w*)\s*\(/.exec(header);
+    return plain === null ? [] : [{ node, body: body2, name: plain[1] }];
+  });
+  const invokedClosures = declared.flatMap((outer) => descendants(outer.body, "func_literal").flatMap((node) => {
+    const body2 = node.childForFieldName("body");
+    const invocation = node.parent;
+    if (body2 === null || invocation?.type !== "call_expression" || invocation.childForFieldName("function")?.id !== node.id) return [];
+    return [{
+      node,
+      body: body2,
+      name: `${outer.name} callback`,
+      ...outer.receiverName === void 0 ? {} : { receiverName: outer.receiverName },
+      ...outer.receiverType === void 0 ? {} : { receiverType: outer.receiverType }
+    }];
+  }));
+  return [...declared, ...invokedClosures];
+}
+function standardAliases(root, source) {
+  const aliases = { imports: /* @__PURE__ */ new Map() };
+  for (const spec of descendants(root, "import_spec")) {
+    const text = sourceText(spec, source).trim();
+    const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(text);
+    if (match === null) continue;
+    const path = match[2];
+    const alias = match[1] ?? path.split("/").pop();
+    if (alias === "_" || alias === ".") continue;
+    aliases.imports.set(alias, path);
+    if (path === "context") aliases.context = alias;
+    else if (path === "errors") aliases.errors = alias;
+  }
+  return aliases;
+}
+function normalCancellationReturns(fn, source, contextAlias, errorsAlias, imports) {
+  const results = [];
+  for (const statement of scopedDescendants(fn, "if_statement")) {
+    const condition = statement.childForFieldName("condition");
+    const consequence = statement.childForFieldName("consequence");
+    if (condition === null || consequence === null) continue;
+    const cancellation = cancellationErrorName(condition, statement, fn, source, contextAlias, errorsAlias);
+    if (cancellation === void 0) continue;
+    const returns = descendants(consequence, "return_statement").filter((returned2) => !insideNestedFunction(returned2, consequence));
+    const returned = returns.find((candidate) => {
+      if (exactReturnedIdentifier(candidate, source) !== cancellation.errorName) return false;
+      const provenanceStart = cancellation.errorGuard?.childForFieldName("condition")?.endIndex ?? condition.endIndex;
+      return !bindingChangesBeforeUse(fn, cancellation.errorName, provenanceStart, candidate, source);
+    });
+    if (returned === void 0) continue;
+    const calls = descendants(consequence, "call_expression").filter((call) => !insideNestedFunction(call, consequence));
+    const reachableCalls = calls.filter((call) => isExpressionStatement(call, consequence) && isDirectInBlock(call, consequence) && directStatementIsReachable(call, consequence, fn, source));
+    if (reachableCalls.some((call) => {
+      const method = selectedMethod(call, source);
+      return method !== void 0 && ERROR_LOG_METHODS.has(method);
+    }) || reachableCalls.some((call) => calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source))) continue;
+    const normalLog = reachableCalls.find((call) => {
+      const method = selectedMethod(call, source);
+      return method !== void 0 && NORMAL_LOG_METHODS.has(method) && isLoggingReceiver(call, source, imports) && NORMAL_WORDS.test(sourceText(call, source));
+    });
+    const effectScope = cancellation.errorGuard?.childForFieldName("consequence");
+    const suppressedEffect = effectScope === null || effectScope === void 0 ? void 0 : descendants(effectScope, "call_expression").find((call) => {
+      const method = selectedMethod(call, source);
+      return call.startIndex > statement.endIndex && !insideNestedFunction(call, effectScope) && method !== void 0 && SUPPRESSED_EFFECT_METHODS.has(method);
+    });
+    if (normalLog === void 0 && suppressedEffect === void 0) continue;
+    results.push({
+      fn,
+      errorName: cancellation.errorName,
+      kinds: cancellation.kinds,
+      condition,
+      returned,
+      ...normalLog === void 0 ? {} : { normalLog },
+      ...suppressedEffect === void 0 ? {} : { suppressedEffect }
+    });
+  }
+  return results;
+}
+function cancellationErrorName(condition, statement, fn, source, contextAlias, errorsAlias) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+  const contextMatch = new RegExp(`^(?:([A-Za-z_]\\w*)\\.Err\\(\\)!=nil|nil!=([A-Za-z_]\\w*)\\.Err\\(\\))$`).exec(compact);
+  if (contextMatch !== null) {
+    const contextName = contextMatch[1] ?? contextMatch[2];
+    if (!functionReceivesContext(fn, source, contextName, contextAlias) || locallyShadowsParameter(fn, contextName, condition, source)) return void 0;
+    let parent = statement.parent;
+    while (parent !== null && parent.id !== fn.node.id) {
+      if (parent.type === "if_statement") {
+        const outer = parent.childForFieldName("condition");
+        if (outer !== null) {
+          const error = exactNonNilIdentifier(outer, source);
+          if (error !== void 0) return {
+            errorName: error,
+            kinds: /* @__PURE__ */ new Set(["canceled", "deadline"]),
+            errorGuard: parent
+          };
+        }
+      }
+      parent = parent.parent;
+    }
+    return void 0;
+  }
+  if (errorsAlias === void 0) return void 0;
+  if (bindingShadowsName(fn, errorsAlias, condition, source) || bindingShadowsName(fn, contextAlias, condition, source)) return void 0;
+  const escapedErrors = escapeRegExp(errorsAlias);
+  const escapedContext = escapeRegExp(contextAlias);
+  const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
+  const expression = new RegExp(
+    `^${escapedErrors}\\.Is\\(([A-Za-z_]\\w*),${escapedContext}\\.(Canceled|DeadlineExceeded),?\\)$`
+  );
+  const matches = atoms.map((candidate) => expression.exec(candidate));
+  const names = matches.map((match) => match?.[1]);
+  if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
+  const kinds = new Set(matches.map((match) => match[2] === "Canceled" ? "canceled" : "deadline"));
+  return { errorName: names[0], kinds };
+}
+function functionReceivesContext(fn, source, name2, contextAlias) {
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  return new RegExp(`\\b${escapeRegExp(name2)}\\s+${escapeRegExp(contextAlias)}\\.Context\\b`).test(header);
+}
+function exactNonNilIdentifier(condition, source) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+  return /^(?:([A-Za-z_]\w*)!=nil|nil!=([A-Za-z_]\w*))$/.exec(compact)?.slice(1).find(Boolean);
+}
+function exactReturnedIdentifier(statement, source) {
+  const match = /^return\s+([A-Za-z_]\w*)$/.exec(sourceText(statement, source).trim());
+  return match?.[1];
+}
+function resolvesDirectly(call, caller, callee, source) {
+  const fn = call.childForFieldName("function");
+  if (fn === null) return false;
+  if (callee.receiverType === void 0) {
+    return fn.type === "identifier" && sourceText(fn, source) === callee.name && !locallyDeclaredBefore(caller, callee.name, call, source);
+  }
+  if (caller.receiverType !== callee.receiverType || caller.receiverName === void 0 || fn.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  const field = fn.childForFieldName("field");
+  return operand?.type === "identifier" && sourceText(operand, source) === caller.receiverName && !locallyDeclaredBefore(caller, caller.receiverName, call, source) && field !== null && sourceText(field, source) === callee.name;
+}
+function assignedResult(call, source) {
+  let assignment = call.parent;
+  while (assignment !== null && assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") {
+    if (assignment.type === "expression_statement" || assignment.type === "if_statement") return void 0;
+    assignment = assignment.parent;
+  }
+  if (assignment === null) return void 0;
+  const right = assignment.childForFieldName("right")?.namedChildren ?? [];
+  const left = assignment.childForFieldName("left")?.namedChildren ?? [];
+  if (right.length !== 1 || !containsNode(right[0], call) || left.length !== 1 || left[0]?.type !== "identifier") return void 0;
+  return { name: sourceText(left[0], source), assignment };
+}
+function nonNilGuardForResult(call, caller, name2, source) {
+  let parent = call.parent;
+  while (parent !== null && parent.id !== caller.node.id) {
+    if (parent.type === "if_statement") {
+      const condition = parent.childForFieldName("condition");
+      if (condition !== null && exactNonNilIdentifier(condition, source) === name2) return parent;
+    }
+    parent = parent.parent;
+  }
+  return void 0;
+}
+function directErrorLogger(guard, resultCall, caller, errorName, normalKinds, source, aliases) {
+  const consequence = guard.childForFieldName("consequence");
+  if (consequence === null) return void 0;
+  for (const call of descendants(consequence, "call_expression")) {
+    if (insideNestedFunction(call, consequence)) continue;
+    const method = selectedMethod(call, source);
+    if (method === void 0 || !ERROR_LOG_METHODS.has(method) || !errorLoggerUsesResult(call, errorName, source, aliases.imports)) continue;
+    if (!isExpressionStatement(call, consequence) || !isDirectInBlock(call, consequence)) continue;
+    if (!directStatementIsReachable(call, consequence, caller, source)) continue;
+    if (bindingChangesBeforeUse(caller, errorName, resultCall.endIndex, call, source)) continue;
+    if (callerFiltersCancellation(consequence, call, caller, errorName, normalKinds, source, aliases)) continue;
+    return call;
+  }
+  return void 0;
+}
+function errorLoggerUsesResult(call, errorName, source, imports) {
+  if (isLoggingReceiver(call, source, imports) && containsUnshadowedIdentifier(call, errorName, source)) return true;
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  if (operand?.type !== "call_expression" || selectedMethod(operand, source) !== "WithError" || !isLoggingReceiver(operand, source, imports)) return false;
+  return containsUnshadowedIdentifier(call, errorName, source);
+}
+function callerFiltersCancellation(block, logger, caller, errorName, normalKinds, source, aliases) {
+  if (aliases.context === void 0 || aliases.errors === void 0) return false;
+  const covered = /* @__PURE__ */ new Set();
+  for (const statement of directStatements(block)) {
+    if (statement.type !== "if_statement" || statement.endIndex >= logger.startIndex) continue;
+    const condition = statement.childForFieldName("condition");
+    const consequence = statement.childForFieldName("consequence");
+    if (condition === null || consequence === null || bindingShadowsName(caller, aliases.errors, condition, source) || bindingShadowsName(caller, aliases.context, condition, source)) continue;
+    const filter = errorsIsCancellation(condition, source, aliases.errors, aliases.context);
+    if (filter?.errorName !== errorName || !blockTerminates(consequence, caller, source, logger)) continue;
+    for (const kind of filter.kinds) covered.add(kind);
+  }
+  return [...normalKinds].every((kind) => covered.has(kind));
+}
+function errorsIsCancellation(condition, source, errorsAlias, contextAlias) {
+  const compact = sourceText(condition, source).replace(/\s+/g, "");
+  const atoms = splitTopLevelOr(compact).map(stripOuterParentheses);
+  const expression = new RegExp(
+    `^${escapeRegExp(errorsAlias)}\\.Is\\(([A-Za-z_]\\w*),${escapeRegExp(contextAlias)}\\.(Canceled|DeadlineExceeded),?\\)$`
+  );
+  const matches = atoms.map((candidate) => expression.exec(candidate));
+  const names = matches.map((match) => match?.[1]);
+  if (names.length === 0 || names.some((name2) => name2 === void 0) || new Set(names).size !== 1) return void 0;
+  const kinds = new Set(matches.map((match) => match[2] === "Canceled" ? "canceled" : "deadline"));
+  return { errorName: names[0], kinds };
+}
+function blockTerminates(block, fn, source, target) {
+  for (const statement of directStatements(block)) {
+    if (statementTerminates(statement, fn, source, target)) return true;
+  }
+  return false;
+}
+function statementTerminates(statement, fn, source, target) {
+  if (["return_statement", "continue_statement", "break_statement"].includes(statement.type)) return true;
+  if (statement.type === "goto_statement") return target === void 0 || gotoBypassesNode(statement, target, fn, source);
+  if (statement.type === "expression_statement") {
+    const call = descendants(statement, "call_expression")[0];
+    if (call !== void 0 && calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source)) return true;
+    if (call !== void 0 && unshadowedOsExit(call, fn, source)) return true;
+  }
+  if (statement.type === "if_statement") return ifTerminates(statement, fn, source, target);
+  return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source, target);
+}
+function directStatements(block) {
+  return block.namedChildren.find((child) => child.type === "statement_list")?.namedChildren ?? block.namedChildren;
+}
+function ifTerminates(statement, fn, source, target) {
+  const consequence = statement.childForFieldName("consequence");
+  const alternative = statement.childForFieldName("alternative");
+  if (consequence === null || alternative === null || !blockTerminates(consequence, fn, source, target)) return false;
+  return alternative.type === "if_statement" ? ifTerminates(alternative, fn, source, target) : blockTerminates(alternative, fn, source, target);
+}
+function switchTerminates(statement, fn, source, target) {
+  const cases = statement.namedChildren.filter((child) => child.type === "expression_case" || child.type === "default_case");
+  if (cases.length === 0 || !cases.some((candidate) => candidate.type === "default_case")) return false;
+  return cases.every((candidate) => caseTerminates(candidate, fn, source, target));
+}
+function caseTerminates(candidate, fn, source, target) {
+  return directStatements(candidate).some((statement) => {
+    if (statement.type === "return_statement") return true;
+    if (statement.type === "goto_statement") return target === void 0 || gotoBypassesNode(statement, target, fn, source);
+    if (statement.type === "expression_statement") {
+      const call = descendants(statement, "call_expression")[0];
+      return call !== void 0 && (calledName(call, source) === "panic" && !bindingShadowsName(fn, "panic", call, source) && !packageDeclaresName(fn, "panic", source) || unshadowedOsExit(call, fn, source));
+    }
+    if (statement.type === "if_statement") return ifTerminates(statement, fn, source, target);
+    return statement.type === "expression_switch_statement" && switchTerminates(statement, fn, source, target);
+  });
+}
+function directStatementIsReachable(node, block, fn, source) {
+  const statements = directStatements(block);
+  const containing = statements.find((statement) => containsNode(statement, node));
+  if (containing === void 0) return false;
+  return !statements.some((statement) => {
+    if (statement.endIndex > containing.startIndex) return false;
+    if (statement.type === "goto_statement") return gotoBypassesNode(statement, node, fn, source);
+    return statementTerminates(statement, fn, source, node);
+  });
+}
+function gotoBypassesNode(statement, node, fn, source) {
+  const label = /\bgoto\s+([A-Za-z_]\w*)/.exec(sourceText(statement, source))?.[1];
+  if (label === void 0) return true;
+  const target = scopedDescendants(fn, "labeled_statement").find((candidate) => new RegExp(`^\\s*${escapeRegExp(label)}\\s*:`).test(sourceText(candidate, source)));
+  return target === void 0 || target.startIndex < statement.startIndex || target.startIndex > node.endIndex;
+}
+function unshadowedOsExit(call, fn, source) {
+  let functionNode = call.childForFieldName("function");
+  while (functionNode?.type === "parenthesized_expression" && functionNode.namedChildren.length === 1) {
+    functionNode = functionNode.namedChildren[0] ?? null;
+  }
+  if (functionNode?.type !== "selector_expression" || sourceText(functionNode.childForFieldName("field") ?? functionNode, source) !== "Exit") return false;
+  const operand = functionNode?.type === "selector_expression" ? functionNode.childForFieldName("operand") : null;
+  if (operand?.type !== "identifier") return false;
+  const alias = sourceText(operand, source);
+  let root = fn.node;
+  while (root.parent !== null) root = root.parent;
+  if (standardAliases(root, source).imports.get(alias) !== "os") return false;
+  return !localBindingShadowsAtUse(fn, alias, call, source);
+}
+function localBindingShadowsAtUse(fn, name2, use, source) {
+  if (fn.receiverName === name2) return true;
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return true;
+  const declarations = [
+    ...descendants(fn.body, "short_var_declaration"),
+    ...descendants(fn.body, "var_spec"),
+    ...descendants(fn.body, "const_spec")
+  ];
+  return declarations.some((declaration) => declaration.startIndex < use.startIndex && !insideNestedFunction(declaration, fn.body) && declarationNames(declaration, source).has(name2) && declarationScopeContainsUse(declaration, use));
+}
+function declarationNames(node, source) {
+  let candidate = node;
+  if (node.type === "short_var_declaration") {
+    candidate = node.childForFieldName("left") ?? node.namedChildren[0] ?? node;
+  }
+  const text = sourceText(candidate, source).split(/:=|=|\s+(?=[A-Za-z_*\[])/, 1)[0] ?? "";
+  return new Set(text.split(",").map((part) => part.trim()).filter((part) => /^[A-Za-z_]\w*$/.test(part)));
+}
+function declarationScopeContainsUse(declaration, use) {
+  const block = enclosingBlock(declaration);
+  if (block === null) return false;
+  let current = declaration.parent;
+  while (current !== null && current.id !== block.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
+      return containsNode(current, use);
+    }
+    current = current.parent;
+  }
+  return containsNode(block, use);
+}
+function isLoggingReceiver(call, source, imports) {
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return false;
+  const operand = fn.childForFieldName("operand");
+  if (operand === null) return false;
+  const receiver = sourceText(operand, source);
+  if (operand.type !== "identifier") return /(?:^|\.)(?:log|logger|logging|slog|zap|zerolog)$/i.test(receiver);
+  const path = imports.get(receiver);
+  if (path !== void 0) {
+    return path === "log/slog" || /(?:^|\/)(?:log|logging|logrus|zap|zerolog|glog)(?:\/|$)/i.test(path);
+  }
+  return /^(?:log|logger|logging|slog|zap|zerolog)$/i.test(receiver);
+}
+function isDirectInBlock(node, block) {
+  let current = node.parent;
+  while (current !== null && current.id !== block.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement", "select_statement", "func_literal"].includes(current.type)) return false;
+    current = current.parent;
+  }
+  return current?.id === block.id;
+}
+function isExpressionStatement(node, block) {
+  let current = node.parent;
+  while (current !== null && current.id !== block.id) {
+    if (current.type === "expression_statement") return true;
+    if (["return_statement", "assignment_statement", "short_var_declaration", "defer_statement", "go_statement"].includes(current.type)) return false;
+    current = current.parent;
+  }
+  return false;
+}
+function locallyDeclaredBefore(fn, name2, use, source) {
+  const header = sourceText(fn.node, source).slice(0, Math.max(0, fn.body.startIndex - fn.node.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header) && name2 !== fn.receiverName) return true;
+  const prefix = source.slice(fn.body.startIndex, use.startIndex);
+  return new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
+}
+function bindingShadowsName(fn, name2, use, source) {
+  return localBindingShadowsAtUse(fn, name2, use, source);
+}
+function locallyShadowsParameter(fn, name2, use, source) {
+  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration.endIndex >= use.startIndex) continue;
+    const left = declaration.childForFieldName("left");
+    const scope = enclosingBlock(declaration);
+    if (left !== null && directlyAssignsIdentifier(left, name2, source) && scope !== null && (scope.id !== fn.body.id && containsNode(scope, use) || controlInitializerScopesUse(declaration, use, scope))) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "var_declaration")) {
+    if (declaration.endIndex >= use.startIndex) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope === null || scope.id === fn.body.id || !containsNode(scope, use)) continue;
+    if (new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) return true;
+  }
+  return false;
+}
+function controlInitializerScopesUse(declaration, use, enclosing) {
+  let current = declaration.parent;
+  while (current !== null && current.id !== enclosing.id) {
+    if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
+      return containsNode(current, use);
+    }
+    current = current.parent;
+  }
+  return false;
+}
+function packageDeclaresName(fn, name2, source) {
+  let root = fn.node;
+  while (root.parent !== null) root = root.parent;
+  return root.namedChildren.some((declaration) => {
+    if (declaration.type === "function_declaration") {
+      const declared = declaration.childForFieldName("name");
+      return declared !== null && sourceText(declared, source) === name2;
+    }
+    if (declaration.type === "type_declaration") {
+      return descendants(declaration, "type_spec").some((spec) => sourceText(spec, source).trimStart().startsWith(`${name2} `));
+    }
+    if (declaration.type !== "var_declaration" && declaration.type !== "const_declaration") return false;
+    return new RegExp(`^(?:var|const)\\s+(?:${escapeRegExp(name2)}\\b|\\([\\s\\S]*?^\\s*${escapeRegExp(name2)}\\b)`, "m").test(sourceText(declaration, source));
+  });
+}
+function selectedMethod(call, source) {
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "selector_expression") return void 0;
+  const field = fn.childForFieldName("field");
+  return field === null ? void 0 : sourceText(field, source);
+}
+function calledName(call, source) {
+  const fn = call.childForFieldName("function");
+  return fn?.type === "identifier" ? sourceText(fn, source) : void 0;
+}
+function containsUnshadowedIdentifier(node, name2, source) {
+  return descendants(node, "identifier").some(
+    (candidate) => sourceText(candidate, source) === name2 && !insideNestedFunction(candidate, node) && !isCompositeLiteralKey(candidate)
+  );
+}
+function isCompositeLiteralKey(node) {
+  const literal = node.parent;
+  const keyed = literal?.parent;
+  if (literal?.type !== "literal_element" || keyed?.type !== "keyed_element" || keyed.namedChildren[0]?.id !== literal.id) return false;
+  const values = keyed.parent;
+  const composite = values?.parent;
+  return values?.type === "literal_value" && composite?.type === "composite_literal" && composite.namedChildren[0]?.type === "struct_type";
+}
+function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
+  for (const assignment of descendants(fn.body, "assignment_statement")) {
+    if (assignment.startIndex <= startIndex || assignment.endIndex >= use.startIndex) continue;
+    if (insideNestedFunction(assignment, fn.body) && !immediatelyInvokedMutation(assignment, fn, name2, source) && !definitelyInvokedStoredMutation(assignment, fn, name2, use, source)) continue;
+    const left = assignment.childForFieldName("left");
+    if (left !== null && directlyAssignsIdentifier(left, name2, source)) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
+    const left = declaration.childForFieldName("left");
+    if (left === null || !directlyAssignsIdentifier(left, name2, source)) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope !== null && containsNode(scope, use)) return true;
+  }
+  for (const declaration of scopedDescendants(fn, "var_declaration")) {
+    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
+    if (!new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) continue;
+    const scope = enclosingBlock(declaration);
+    if (scope !== null && containsNode(scope, use)) return true;
+  }
+  return false;
+}
+function immediatelyInvokedMutation(mutation, fn, name2, source) {
+  let literal = mutation.parent;
+  while (literal !== null && literal.id !== fn.body.id && literal.type !== "func_literal") literal = literal.parent;
+  if (literal === null || literal.type !== "func_literal") return false;
+  const body2 = literal.childForFieldName("body");
+  if (body2 === null) return false;
+  if (!isDirectInBlock(mutation, body2) || !directStatementIsReachable(mutation, body2, fn, source)) return false;
+  let invocation = literal.parent;
+  while (invocation !== null && invocation.type === "parenthesized_expression") invocation = invocation.parent;
+  if (invocation?.type !== "call_expression" || !containsNode(invocation.childForFieldName("function") ?? invocation, literal) || insideNestedFunction(invocation, fn.body)) return false;
+  const header = sourceText(literal, source).slice(0, Math.max(0, body2.startIndex - literal.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
+  const prefix = source.slice(body2.startIndex, mutation.startIndex);
+  return !new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix);
+}
+function definitelyInvokedStoredMutation(mutation, fn, name2, use, source) {
+  let literal = mutation.parent;
+  while (literal !== null && literal.id !== fn.body.id && literal.type !== "func_literal") literal = literal.parent;
+  if (literal === null || literal.type !== "func_literal") return false;
+  const body2 = literal.childForFieldName("body");
+  if (body2 === null) return false;
+  if (!isDirectInBlock(mutation, body2) || !directStatementIsReachable(mutation, body2, fn, source)) return false;
+  const header = sourceText(literal, source).slice(0, Math.max(0, body2.startIndex - literal.startIndex));
+  if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
+  const prefix = source.slice(body2.startIndex, mutation.startIndex);
+  if (new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix)) return false;
+  let declaration = literal.parent;
+  while (declaration !== null && declaration.type !== "short_var_declaration") {
+    if (["statement_list", "block"].includes(declaration.type)) return false;
+    declaration = declaration.parent;
+  }
+  if (declaration === null || declaration.endIndex >= use.startIndex) return false;
+  const left = declaration.childForFieldName("left");
+  const closureIdentifier = left?.type === "identifier" ? left : left?.type === "expression_list" && left.namedChildren.length === 1 && left.namedChildren[0]?.type === "identifier" ? left.namedChildren[0] : void 0;
+  const closureName = closureIdentifier === void 0 ? void 0 : sourceText(closureIdentifier, source);
+  const scope = enclosingBlock(declaration);
+  if (closureName === void 0 || scope === null || !containsNode(scope, use)) return false;
+  for (const invocation of descendants(scope, "call_expression")) {
+    if (invocation.startIndex <= declaration.endIndex || invocation.endIndex >= use.startIndex || insideNestedFunction(invocation, scope) || calledName(invocation, source) !== closureName) continue;
+    const statement = invocation.parent;
+    if (statement?.type !== "expression_statement" || !isDirectInBlock(invocation, scope) || !directStatementIsReachable(invocation, scope, fn, source)) continue;
+    const reassigned = descendants(scope, "assignment_statement").some((assignment) => {
+      if (assignment.startIndex <= declaration.endIndex || assignment.endIndex >= invocation.startIndex || insideNestedFunction(assignment, scope)) return false;
+      const assigned = assignment.childForFieldName("left");
+      return assigned !== null && directlyAssignsIdentifier(assigned, closureName, source);
+    });
+    if (!reassigned) return true;
+  }
+  return false;
+}
+function directlyAssignsIdentifier(node, name2, source) {
+  if (node.type === "identifier" && sourceText(node, source) === name2) return true;
+  if (node.type !== "expression_list") return false;
+  return node.namedChildren.some(
+    (candidate) => candidate.type === "identifier" && sourceText(candidate, source) === name2
+  );
+}
+function enclosingBlock(node) {
+  let current = node.parent;
+  while (current !== null) {
+    if (current.type === "block") return current;
+    current = current.parent;
+  }
+  return null;
+}
+function containsNode(ancestor, node) {
+  return node.startIndex >= ancestor.startIndex && node.endIndex <= ancestor.endIndex;
+}
+function scopedDescendants(fn, type) {
+  return descendants(fn.body, type).filter((node) => !insideNestedFunction(node, fn.body));
+}
+function insideNestedFunction(node, boundary) {
+  let current = node.parent;
+  while (current !== null && current.id !== boundary.id) {
+    if (current.type === "func_literal") return true;
+    current = current.parent;
+  }
+  return false;
+}
+function changedAnchor(file, nodes, currentRoot, previousRoot) {
+  if (file.status === "repository" || file.status === "added") {
+    const node = nodes[nodes.length - 1];
+    return node === void 0 ? void 0 : { node, line: lineOf(node) };
+  }
+  for (const node of nodes) {
+    if (previousRoot !== void 0 && !semanticNodeChanged(node, currentRoot, previousRoot, file.current, file.previous)) continue;
+    for (let line = lineOf(node); line <= node.endPosition.row + 1; line += 1) {
+      if (file.changedLines.has(line) && hasSemanticLeafOnLine(node, line) && (previousRoot !== void 0 || !hasCommentOnLine(currentRoot, line))) return { node, line };
+    }
+  }
+  return void 0;
+}
+function semanticNodeChanged(node, currentRoot, previousRoot, current, previous) {
+  const previousNode = correspondingPreviousNode(node, currentRoot, previousRoot, current, previous);
+  return previousNode === void 0 || previousNode.type !== node.type || semanticText(node, current) !== semanticText(previousNode, previous);
+}
+function correspondingPreviousNode(node, currentRoot, previousRoot, current, previous) {
+  const owner = enclosingNamedDeclaration(node) ?? currentRoot;
+  const identity = declarationIdentity(owner, current);
+  if (identity === void 0) return void 0;
+  const previousOwner = owner.type === "source_file" ? previousRoot : descendants(previousRoot, owner.type).find(
+    (candidate) => declarationIdentity(candidate, previous) === identity
+  );
+  if (previousOwner === void 0) return void 0;
+  const path = [];
+  let currentNode = node;
+  while (currentNode.id !== owner.id) {
+    const parent = currentNode.parent;
+    if (parent === null) return void 0;
+    const siblings = semanticNamedChildren(parent);
+    const index = siblings.findIndex((candidate) => candidate.id === currentNode.id);
+    if (index < 0) return void 0;
+    path.unshift(index);
+    currentNode = parent;
+  }
+  let previousNode = previousOwner;
+  for (const index of path) {
+    const candidate = semanticNamedChildren(previousNode)[index];
+    if (candidate === void 0) return void 0;
+    previousNode = candidate;
+  }
+  return previousNode;
+}
+function enclosingNamedDeclaration(node) {
+  let current = node;
+  while (current !== null) {
+    if (["method_declaration", "function_declaration", "type_spec"].includes(current.type)) return current;
+    current = current.parent;
+  }
+  return void 0;
+}
+function declarationIdentity(node, source) {
+  if (node.type === "source_file") return "source_file";
+  const name2 = node.childForFieldName("name");
+  if (name2 === null) return void 0;
+  if (node.type === "method_declaration") {
+    const body2 = node.childForFieldName("body");
+    const header = sourceText(node, source).slice(0, Math.max(0, (body2?.startIndex ?? node.endIndex) - node.startIndex));
+    const method = /^func\s*\(\s*[A-Za-z_]\w*\s+\*?([A-Za-z_]\w*)\s*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    return method === null ? void 0 : `${node.type}:${method[1]}.${method[2]}`;
+  }
+  return `${node.type}:${sourceText(name2, source)}`;
+}
+function semanticNamedChildren(node) {
+  return node.namedChildren.filter((child) => child.type !== "comment");
+}
+function semanticText(node, source) {
+  if (node.type === "comment") return "";
+  if (node.childCount === 0) return sourceText(node, source).replace(/\s+/g, "");
+  return node.children.map((child) => semanticText(child, source)).join("");
+}
+function hasCommentOnLine(node, line) {
+  return descendants(node, "comment").some((comment) => line >= lineOf(comment) && line <= comment.endPosition.row + 1);
+}
+function hasSemanticLeafOnLine(node, line) {
+  if (node.type === "comment" || line < lineOf(node) || line > node.endPosition.row + 1) return false;
+  const children = node.namedChildren.filter(
+    (child) => child.type !== "comment" && line >= lineOf(child) && line <= child.endPosition.row + 1
+  );
+  if (children.length === 0) return node.namedChildCount === 0;
+  return children.some((child) => hasSemanticLeafOnLine(child, line));
+}
+function lineOf(node) {
+  return node.startPosition.row + 1;
+}
+function lineText(source, line) {
+  return (source.split("\n")[line - 1] ?? "").trim().slice(0, 300);
+}
+function splitTopLevelOr(value) {
+  const parts2 = [];
+  let depth = 0;
+  let start2 = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1;
+    else if (value[index] === ")") depth -= 1;
+    else if (depth === 0 && value[index] === "|" && value[index + 1] === "|") {
+      parts2.push(value.slice(start2, index));
+      start2 = index + 2;
+      index += 1;
+    }
+  }
+  parts2.push(value.slice(start2));
+  return parts2.filter((part) => part.length > 0);
+}
+function stripOuterParentheses(value) {
+  let current = value;
+  while (current.startsWith("(") && current.endsWith(")")) {
+    let depth = 0;
+    let enclosesAll = true;
+    for (let index = 0; index < current.length; index += 1) {
+      if (current[index] === "(") depth += 1;
+      else if (current[index] === ")") depth -= 1;
+      if (depth === 0 && index < current.length - 1) {
+        enclosesAll = false;
+        break;
+      }
+    }
+    if (!enclosesAll) break;
+    current = current.slice(1, -1);
+  }
+  return current;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// src/failure-rates.ts
+var FAILURE_TOKENS = /* @__PURE__ */ new Set(["error", "errors", "fail", "fails", "failed", "failure", "failures"]);
+var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution", "operation"]);
+function failureCounterWithoutDenominatorSignals(files) {
+  const byDirectory = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const directory = metricDirectory(file.path);
+    const definitions = byDirectory.get(directory) ?? [];
+    definitions.push(...counterDefinitions(file));
+    byDirectory.set(directory, definitions);
+  }
+  const signals = [];
+  for (const definitions of byDirectory.values()) {
+    for (const failure of definitions) {
+      if (failure.subject === null) continue;
+      const hasDenominator = definitions.some(
+        (candidate) => candidate !== failure && isDenominatorFor(candidate, failure.subject)
+      );
+      if (hasDenominator) continue;
+      signals.push({
+        ruleId: "go-obs.metrics.failure-without-denominator",
+        path: failure.path,
+        line: failure.line,
+        message: `Metric ${failure.metricName} counts failures without a comparable ${subjectName(failure.subject)} attempts or total counter.`,
+        snippet: failure.metricName,
+        data: {
+          metric: failure.metricName,
+          subject: failure.subject.join("_")
+        }
+      });
+    }
+  }
+  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
+}
+function counterDefinitions(file) {
+  const definitions = [];
+  const constructor = /\b(?:(?:prometheus|promauto|metric)\.)NewCounter(?:VecWithLabels|Vec|Func)?\s*\(/g;
+  let match;
+  while ((match = constructor.exec(file.current)) !== null) {
+    const openBrace = file.current.indexOf("{", constructor.lastIndex);
+    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
+    const optionsType = file.current.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.|metric\.)?CounterOpts$/.test(optionsType)) continue;
+    const body2 = balancedBody(file.current, openBrace, "{", "}");
+    if (body2 === null) continue;
+    const metricName = metricNameFromOptions(body2);
+    if (metricName === "") continue;
+    const tokens = metricTokens(metricName);
+    definitions.push({
+      path: file.path,
+      line: file.current.slice(0, match.index ?? 0).split("\n").length,
+      metricName,
+      subject: failureSubject(tokens),
+      denominatorTokens: denominatorTokens(tokens)
+    });
+  }
+  return definitions;
+}
+function metricNameFromOptions(body2) {
+  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
+  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
+  return literals.at(-1)?.[1] ?? "";
+}
+function metricTokens(metricName) {
+  const tokens = metricName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.at(-1) === "total") tokens.pop();
+  return tokens;
+}
+function failureSubject(tokens) {
+  if (!tokens.some((token) => FAILURE_TOKENS.has(token))) return null;
+  const subject = tokens.filter((token) => !FAILURE_TOKENS.has(token)).map(normalizeSubjectToken);
+  return subject.length === 0 ? null : subject;
+}
+function denominatorTokens(tokens) {
+  return tokens.map(normalizeSubjectToken);
+}
+function isDenominatorFor(candidate, subject) {
+  if (candidate.subject !== null) return false;
+  if (sameTokens(candidate.denominatorTokens, subject)) return true;
+  const withoutQualifier = candidate.denominatorTokens.filter(
+    (token) => !DENOMINATOR_TOKENS.has(token) || subject.includes(token)
+  );
+  return sameTokens(withoutQualifier, subject);
+}
+function normalizeSubjectToken(token) {
+  if (token.endsWith("ies") && token.length > 3) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
+  return token;
+}
+function sameTokens(left, right) {
+  return left.length === right.length && left.every((token, index) => token === right[index]);
+}
+function subjectName(subject) {
+  return subject.join(" ");
+}
+function balancedBody(source, openIndex, open2, close) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === void 0) break;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\" && quote !== "`") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === open2) depth += 1;
+    if (character !== close) continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+  return null;
+}
+function metricDirectory(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+
+// src/metric-units.ts
+function metricDurationUnitMismatchSignals(files) {
+  const definitions = /* @__PURE__ */ new Map();
+  for (const file of files) {
+    const directory = metricDirectory2(file.path);
+    const packageDefinitions = definitions.get(directory) ?? [];
+    for (const definition of metricDefinitions(file.current)) {
+      packageDefinitions.push({ ...definition, path: file.path });
+    }
+    definitions.set(directory, packageDefinitions);
+  }
+  const signals = [];
+  for (const file of files) {
+    const byVariable = /* @__PURE__ */ new Map();
+    for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
+      const candidates = byVariable.get(definition.variable) ?? [];
+      candidates.push(definition);
+      byVariable.set(definition.variable, candidates);
+    }
+    for (const candidates of byVariable.values()) {
+      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
+      if (definition === void 0) continue;
+      signals.push(...observationMismatches(file, definition));
+    }
+  }
+  return deduplicate(signals);
+}
+function metricDefinitions(source) {
+  const definitions = [];
+  const constructor = /\b([A-Za-z_]\w*)\s*(?::=|=)\s*(?:(?:prometheus|promauto)\.)New(?:Histogram|Summary)(?:Vec)?\s*\(/g;
+  let match;
+  while ((match = constructor.exec(source)) !== null) {
+    const variable = match[1];
+    if (variable === void 0) continue;
+    const openBrace = source.indexOf("{", constructor.lastIndex);
+    if (openBrace === -1 || openBrace - constructor.lastIndex > 300) continue;
+    const optionsType = source.slice(constructor.lastIndex, openBrace).trim();
+    if (!/^(?:prometheus\.)?(?:HistogramOpts|SummaryOpts)$/.test(optionsType)) continue;
+    const body2 = balancedBody2(source, openBrace, "{", "}");
+    if (body2 === null) continue;
+    const metricName = metricNameFromOptions2(body2);
+    const unit = declaredDurationUnit(metricName);
+    if (metricName !== "" && unit !== null) definitions.push({ variable, metricName, unit });
+  }
+  return definitions;
+}
+function metricNameFromOptions2(body2) {
+  const nameField = body2.match(/\bName\s*:\s*([^\n]+)/)?.[1] ?? "";
+  const literals = [...nameField.matchAll(/"([^"]+)"/g)];
+  return literals.at(-1)?.[1] ?? "";
+}
+function declaredDurationUnit(metricName) {
+  const normalized = metricName.toLowerCase();
+  for (const unit of ["milliseconds", "microseconds", "nanoseconds", "seconds"]) {
+    if (normalized.endsWith(`_${unit}`)) return unit;
+  }
+  return null;
+}
+function observationMismatches(file, definition) {
+  const variable = escapeRegExp2(definition.variable);
+  const observe = new RegExp(
+    `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
+    "g"
+  );
+  const signals = [];
+  let match;
+  while ((match = observe.exec(file.current)) !== null) {
+    const openParen = (match.index ?? 0) + (match[0]?.lastIndexOf("(") ?? -1);
+    if (openParen < (match.index ?? 0)) continue;
+    const argument = balancedBody2(file.current, openParen, "(", ")");
+    if (argument === null) continue;
+    const observedUnit = observedDurationUnit(argument);
+    if (observedUnit === null || observedUnit === definition.unit) continue;
+    const line = file.current.slice(0, match.index ?? 0).split("\n").length;
+    signals.push({
+      ruleId: "go-obs.metrics.duration-unit-mismatch",
+      path: file.path,
+      line,
+      message: `Metric ${definition.metricName} declares ${definition.unit} but Observe records ${observedUnit}.`,
+      snippet: (file.current.split("\n")[line - 1] ?? "").trim().slice(0, 300),
+      data: {
+        metric: definition.metricName,
+        declaredUnit: definition.unit,
+        observedUnit
+      }
+    });
+  }
+  return signals;
+}
+function observedDurationUnit(argument) {
+  if (/\.Milliseconds\s*\(\s*\)/.test(argument)) return "milliseconds";
+  if (/\.Microseconds\s*\(\s*\)/.test(argument)) return "microseconds";
+  if (/\.Nanoseconds\s*\(\s*\)/.test(argument)) return "nanoseconds";
+  if (/\.Seconds\s*\(\s*\)/.test(argument)) return "seconds";
+  if (/^\s*float64\s*\(\s*time\.Since\s*\(/.test(argument)) return "nanoseconds";
+  return null;
+}
+function balancedBody2(source, openIndex, open2, close) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === void 0) break;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\" && quote !== "`") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === open2) depth += 1;
+    if (character !== close) continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openIndex + 1, index);
+  }
+  return null;
+}
+function metricDirectory2(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function deduplicate(signals) {
+  const seen = /* @__PURE__ */ new Set();
+  return signals.filter((signal) => {
+    const key = `${signal.path}:${signal.line}:${String(signal.data.metric)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
@@ -21742,6 +22512,7 @@ async function analyzeDiscovery(discovery) {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await cancellationEscalationSignals(discovery.files));
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
@@ -21790,6 +22561,7 @@ async function discoverSources(ctx) {
     files.push({
       path: source.path,
       current: source.content,
+      ...change.previous === void 0 ? {} : { previous: change.previous },
       changedLines: change.changedLines,
       status: change.status
     });
@@ -21810,7 +22582,8 @@ async function changedSource(ctx, path) {
   if (head !== void 0 && !ctx.change?.worktree) args2.push(head);
   args2.push("--", path);
   const patch = await gitOutput(ctx.repoPath, args2);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  const previous = await gitOutput(ctx.repoPath, ["show", `${base}:${path}`]);
+  return { changedLines: changedLineNumbers(patch), status: "modified", previous };
 }
 async function existsAtRevision(repoPath, revision, path) {
   try {
@@ -21977,7 +22750,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.8",
+    version: "0.0.9",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {

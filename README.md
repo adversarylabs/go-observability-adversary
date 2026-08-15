@@ -2,7 +2,7 @@
 
 Go Observability reviews whether logs, traces, metrics, and exporters can explain production behavior safely and reliably.
 
-The review covers unbounded metric cardinality, mismatched duration units, failure counters that lack a usable denominator, lost trace context, and factual positives for propagated contexts and owned shutdown.
+The review covers unbounded metric cardinality, mismatched duration units, failure counters that lack a usable denominator, normal cancellation re-escalated as error telemetry, lost trace context, and factual positives for propagated contexts and owned shutdown.
 
 ## Fixtures and calibration
 

@@ -62,6 +62,17 @@ Public grounding: Prometheus label-cardinality guidance ([instrumentation best p
 
 ## Medium
 
+### `go-obs.logging.normal-cancellation-as-error`
+
+| | |
+| --- | --- |
+| **What** | A helper classifies context cancellation as normal shutdown but a direct caller logs the returned error at error level |
+| **Why** | Graceful cancellation becomes a false production error, obscuring real failures and creating noisy alerts |
+| **Looks for** | Same-file direct calls where a callee's explicit `ctx.Err()` or `errors.Is` branch for `context.Canceled`, `context.DeadlineExceeded`, or both suppresses lifecycle effects or emits debug/info shutdown telemetry, returns that same error binding, and the caller unconditionally passes the result directly or through `WithError(err)` to `Error`/`Errorf`/`Errorw` |
+| **Stays quiet when** | A dominating caller guard terminates cancellation before the logger; the result is reassigned or shadowed; the caller only retries, reconnects, or propagates; the callee treats cancellation as exceptional; or resolution would require interfaces, cross-file types, or multiple call hops |
+| **Public example** | Dapr components-contrib #4450 filtered `context.Canceled` and `context.DeadlineExceeded` before its parallel caller's error logger after review identified the remaining shutdown noise |
+| **Remediation** | Preserve propagation when required, but classify normal cancellation before error-level telemetry |
+
 ### `go-obs.metrics.failure-without-denominator`
 
 | | |
