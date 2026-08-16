@@ -1,17 +1,21 @@
 # Go Observability adversary
 
-Go Observability reviews whether logs, traces, metrics, and exporters can explain production behavior safely and reliably.
+Reviews Go logs, traces, metrics, context propagation, and telemetry lifecycle defects.
 
-The review covers unbounded metric cardinality, mismatched duration units, failure counters that lack a usable denominator, normal cancellation re-escalated as error telemetry, lost trace context, and factual positives for propagated contexts and owned shutdown.
+## Goals
 
-## Fixtures and calibration
+The adversary is designed to produce a small number of high-confidence,
+actionable findings grounded in concrete repository evidence. Its review should
+be deterministic where possible, explicit about impact, and quiet when the
+available evidence does not justify a finding.
 
-Five graded fixtures own expected review snapshots. The 61-repository corpus calibrates telemetry and context-propagation judgment.
+## Scope
 
-## Automatic detection
+It evaluates changed Go logging, metrics, tracing, and panic-recovery code for signal correctness, cardinality, lifecycle, and context propagation.
 
-`adversary auto` selects Go Observability for changed Go source. Runtime semantic detection will later narrow selection to instrumented boundaries.
+The complete detector or review inventory is maintained in
+[CHECKS.md](CHECKS.md).
 
-## Development
+## Boundaries
 
-Run `npm test`, `adversary validate .`, and `adversary pack --check .`.
+It owns only this Go specialty. Other Go concerns remain with the corresponding `go/*` adversaries, and it does not execute or modify the target repository.
