@@ -15,7 +15,7 @@ test("manifest, npm, source, bundle, and artifact assertion share one version", 
   const version = parseAdversaryManifest(manifestText).version;
   const packageJson = JSON.parse(packageText);
   const lock = JSON.parse(lockText);
-  assert.equal(version, "0.0.11");
+  assert.equal(version, "0.0.12");
   assert.equal(packageJson.version, version);
   assert.equal(lock.version, version);
   assert.equal(lock.packages[""].version, version);

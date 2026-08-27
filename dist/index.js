@@ -2238,8 +2238,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id = "", normalize2) {
+      if (normalize2 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -3635,7 +3635,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -3928,7 +3928,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
+      normalize: normalize2,
       resolve: resolve3,
       resolveComponent,
       equal,
@@ -15389,15 +15389,15 @@ async function listInScopePaths(repoPath, change, options = {}) {
   const include = options.include ?? (() => true);
   const limit = options.limit !== void 0 && options.limit > 0 ? options.limit : void 0;
   const ignore = new Set(options.ignoreDirectories ?? DEFAULT_IGNORE_DIRECTORIES);
-  let candidates2;
+  let candidates3;
   if (change !== null && change.scanMode === "changed") {
-    candidates2 = change.changedFiles.map(normalizePath2);
+    candidates3 = change.changedFiles.map(normalizePath2);
   } else {
-    candidates2 = await walkRelative(repoPath, ignore);
+    candidates3 = await walkRelative(repoPath, ignore);
   }
   const out2 = [];
   const seen = /* @__PURE__ */ new Set();
-  for (const path of candidates2) {
+  for (const path of candidates3) {
     if (!path || seen.has(path))
       continue;
     if (path.split("/").some((segment) => ignore.has(segment)))
@@ -15900,15 +15900,15 @@ async function findMatchingPaths(repoPath, pattern, recursive) {
     return matcher.test(candidate);
   }).sort(compareStrings);
 }
-async function listFiles(directory) {
-  const entries = await readdir3(directory, { withFileTypes: true });
-  return entries.filter((entry) => entry.isFile()).map((entry) => resolve2(directory, entry.name));
+async function listFiles(directory2) {
+  const entries = await readdir3(directory2, { withFileTypes: true });
+  return entries.filter((entry) => entry.isFile()).map((entry) => resolve2(directory2, entry.name));
 }
-async function walk(directory) {
-  const entries = await readdir3(directory, { withFileTypes: true });
+async function walk(directory2) {
+  const entries = await readdir3(directory2, { withFileTypes: true });
   const paths = [];
   for (const entry of entries) {
-    const path = resolve2(directory, entry.name);
+    const path = resolve2(directory2, entry.name);
     if (entry.isDirectory()) {
       paths.push(...await walk(path));
     } else if (entry.isFile()) {
@@ -17139,6 +17139,17 @@ var domain = {
       recommendation: "Convert the observed duration to the unit named by the metric, normally seconds for Prometheus durations."
     },
     {
+      id: "go-obs.metrics.success-latency-on-non-success-paths",
+      title: "A success-latency distribution includes skipped outcomes",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} success-latency metric${count === 1 ? " is" : "s are"} deferred across proven non-success return paths.`,
+      whyItMatters: "Latency histograms define which population their quantiles describe; mixing skipped work into a successful-completion distribution changes that population.",
+      impact: "Dashboards overstate or distort completion latency, and p95/p99 no longer describe successful operations when skip volume changes.",
+      recommendation: "Emit the latency observation only after the named completion succeeds, or attach a bounded outcome dimension and filter dashboards by outcome."
+    },
+    {
       id: "go-obs.metrics.high-cardinality",
       title: "A metric label has unbounded cardinality",
       category: "observability",
@@ -17333,8 +17344,8 @@ function recoverSwallowSignals(file) {
       /(?:_|\w+)\s*=\s*recover\s*\(\s*\)\s*$/,
       () => "recover result is discarded without telemetry."
     ).filter((s) => {
-      const lineText3 = file.current.split("\n")[s.line - 1] ?? "";
-      return !/\b(?:log|slog|logger|fmt)\./.test(lineText3);
+      const lineText4 = file.current.split("\n")[s.line - 1] ?? "";
+      return !/\b(?:log|slog|logger|fmt)\./.test(lineText4);
     })
   );
   const seen = /* @__PURE__ */ new Set();
@@ -21457,11 +21468,11 @@ var Query = class {
 var languagePromise;
 function assetPath(name2) {
   const currentDirectory = dirname2(fileURLToPath(import.meta.url));
-  const candidates2 = [
+  const candidates3 = [
     join3(currentDirectory, name2),
     join3(currentDirectory, "..", "node_modules", name2 === "web-tree-sitter.wasm" ? "web-tree-sitter" : "tree-sitter-go", name2)
   ];
-  const match = candidates2.find(existsSync);
+  const match = candidates3.find(existsSync);
   if (match === void 0) throw new Error(`Unable to locate parser asset ${name2}`);
   return match;
 }
@@ -22227,10 +22238,10 @@ var DENOMINATOR_TOKENS = /* @__PURE__ */ new Set(["attempt", "call", "execution"
 function failureCounterWithoutDenominatorSignals(files) {
   const byDirectory = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const directory = metricDirectory(file.path);
-    const definitions = byDirectory.get(directory) ?? [];
+    const directory2 = metricDirectory(file.path);
+    const definitions = byDirectory.get(directory2) ?? [];
     definitions.push(...counterDefinitions(file));
-    byDirectory.set(directory, definitions);
+    byDirectory.set(directory2, definitions);
   }
   const signals = [];
   for (const definitions of byDirectory.values()) {
@@ -22689,24 +22700,24 @@ function escapeRegExp2(value) {
 function metricDurationUnitMismatchSignals(files) {
   const definitions = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const directory = metricDirectory2(file.path);
-    const packageDefinitions = definitions.get(directory) ?? [];
+    const directory2 = metricDirectory2(file.path);
+    const packageDefinitions = definitions.get(directory2) ?? [];
     for (const definition of metricDefinitions(file.current)) {
       packageDefinitions.push({ ...definition, path: file.path });
     }
-    definitions.set(directory, packageDefinitions);
+    definitions.set(directory2, packageDefinitions);
   }
   const signals = [];
   for (const file of files) {
     const byVariable = /* @__PURE__ */ new Map();
     for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
-      const candidates2 = byVariable.get(definition.variable) ?? [];
-      candidates2.push(definition);
-      byVariable.set(definition.variable, candidates2);
+      const candidates3 = byVariable.get(definition.variable) ?? [];
+      candidates3.push(definition);
+      byVariable.set(definition.variable, candidates3);
     }
-    for (const candidates2 of byVariable.values()) {
-      const sameFile = candidates2.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates2.length === 1 ? candidates2[0] : void 0;
+    for (const candidates3 of byVariable.values()) {
+      const sameFile = candidates3.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates3.length === 1 ? candidates3[0] : void 0;
       if (definition === void 0) continue;
       signals.push(...observationMismatches(file, definition));
     }
@@ -22828,6 +22839,248 @@ function deduplicate(signals) {
   });
 }
 
+// src/success-latency.ts
+var DURATION_METHOD = /^(?:ExponentialHistogram|Histogram|Observe|ObserveDuration|Record|RecordDuration)$/;
+var NON_SUCCESS_PATH = /\b(?:skip(?:ped)?|buffer(?:ed)?|already|duplicate|exists?|no[_ -]?op|ignored?|filtered?|cached|not[_ -]?(?:start|run))\b/i;
+var SUCCESS_CONTRACT = /\b(?:success(?:ful(?:ly)?)?|succeed(?:ed)?|completion|completed|started)\b/i;
+var OUTCOME_DIMENSION = /\b(?:Outcome|Result|Status|Success|Error|Failure|Failed|Skipped)\w*Tag\s*\(/;
+async function successLatencyOnNonSuccessPathSignals(files) {
+  const contracts = metricContracts(files);
+  if (contracts.length === 0) return [];
+  const signals = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const currentTree = await parseGo(file.current);
+    const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+    try {
+      if (currentTree.rootNode.hasError || previousTree?.rootNode.hasError === true) continue;
+      const current = candidates2(currentTree.rootNode, file.current, contracts, file.path);
+      const previousCounts = signatureCounts2(
+        previousTree === void 0 ? [] : candidates2(previousTree.rootNode, file.previous, contracts, file.path)
+      );
+      const currentCounts = /* @__PURE__ */ new Map();
+      for (const candidate of current) {
+        const occurrence = (currentCounts.get(candidate.signature) ?? 0) + 1;
+        currentCounts.set(candidate.signature, occurrence);
+        if (file.status === "modified" && occurrence <= (previousCounts.get(candidate.signature) ?? 0)) continue;
+        const anchor = changedAnchor3(file, [
+          candidate.deferNode,
+          candidate.metricCall,
+          candidate.earlyReturn,
+          candidate.completionCall
+        ]);
+        if (anchor === void 0) continue;
+        signals.push({
+          ruleId: "go-obs.metrics.success-latency-on-non-success-paths",
+          path: file.path,
+          line: anchor,
+          message: `${candidate.functionName} defers ${candidate.metric} before a skipped return, so the success-latency distribution includes work that never reaches ${candidate.operation}.`,
+          snippet: lineText3(file.current, anchor),
+          data: {
+            function: candidate.functionName,
+            metric: candidate.metric,
+            completionOperation: candidate.operation,
+            scope: "same-function-deferred-success-latency"
+          }
+        });
+      }
+    } finally {
+      previousTree?.delete();
+      currentTree.delete();
+    }
+  }
+  return signals;
+}
+function metricContracts(files) {
+  const contracts = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const packageName = /^\s*package\s+([A-Za-z_]\w*)\b/m.exec(file.current)?.[1];
+    if (packageName === void 0) continue;
+    for (const match of file.current.matchAll(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g)) {
+      const text = match[0];
+      if (!SUCCESS_CONTRACT.test(text)) continue;
+      const identifier = /\b([A-Z][A-Za-z0-9_]*(?:Latency|Duration)[A-Za-z0-9_]*)\b/.exec(text)?.[1];
+      const operation = /\b([A-Z][A-Za-z0-9]{2,})\s+(?:completion|completed)\b/.exec(text)?.[1];
+      if (identifier === void 0 || operation === void 0) continue;
+      contracts.push({
+        identifier,
+        operation,
+        text: normalize(text),
+        path: file.path,
+        directory: directory(file.path),
+        packageName
+      });
+    }
+  }
+  return contracts;
+}
+function candidates2(root, source, contracts, path = "") {
+  const result = [];
+  const imports = importAliases(root, source);
+  const packageName = /^\s*package\s+([A-Za-z_]\w*)\b/m.exec(source)?.[1] ?? "";
+  const functions = descendants(root, "function_declaration").concat(descendants(root, "method_declaration"));
+  for (const fn of functions) {
+    const body2 = fn.childForFieldName("body");
+    const nameNode = fn.childForFieldName("name");
+    if (body2 === null || nameNode === null) continue;
+    const functionName = sourceText(nameNode, source);
+    for (const deferNode of descendants(body2, "defer_statement")) {
+      if (owningFunction(deferNode)?.id !== fn.id || staticallyDead(deferNode, source)) continue;
+      const literal = descendants(deferNode, "func_literal")[0];
+      if (literal === void 0) continue;
+      const literalBody = literal.childForFieldName("body");
+      if (literalBody === null) continue;
+      for (const metricCall of descendants(literalBody, "call_expression")) {
+        if (owningFunction(metricCall)?.id !== literal.id) continue;
+        const method = selectedMethod2(metricCall, source);
+        if (method === void 0 || !DURATION_METHOD.test(method)) continue;
+        const callText = sourceText(metricCall, source);
+        if (!/\btime\.Since\s*\(|\.Seconds\s*\(|\.Milliseconds\s*\(/.test(callText)) continue;
+        const matchingContracts = contracts.filter((item) => contractMatchesCall(
+          item,
+          callText,
+          imports,
+          packageName,
+          directory(path)
+        ));
+        if (matchingContracts.length !== 1) continue;
+        const contract = matchingContracts[0];
+        if (successGuarded(metricCall, literalBody, source)) continue;
+        if (OUTCOME_DIMENSION.test(sourceText(literalBody, source))) continue;
+        const completionCall = descendants(body2, "call_expression").filter((call) => owningFunction(call)?.id === fn.id && call.startIndex > deferNode.endIndex).find((call) => {
+          const selected = selectedMethod2(call, source);
+          return selected === contract.operation || selected?.startsWith(contract.operation) === true;
+        });
+        if (completionCall === void 0) continue;
+        const earlyReturn = descendants(body2, "return_statement").filter((statement) => owningFunction(statement)?.id === fn.id && statement.startIndex > deferNode.endIndex && statement.startIndex < completionCall.startIndex && !staticallyDead(statement, source)).find((statement) => {
+          const context = stripComments(
+            source.slice(Math.max(deferNode.endIndex, statement.startIndex - 600), statement.endIndex)
+          );
+          return NON_SUCCESS_PATH.test(context);
+        });
+        if (earlyReturn === void 0) continue;
+        result.push({
+          signature: [
+            functionName,
+            contract.identifier,
+            contract.operation,
+            normalize(sourceText(deferNode, source)),
+            normalize(sourceText(earlyReturn, source)),
+            selectedMethod2(completionCall, source) ?? ""
+          ].join("|"),
+          functionName,
+          metric: contract.identifier,
+          operation: contract.operation,
+          deferNode,
+          metricCall,
+          completionCall,
+          earlyReturn
+        });
+      }
+    }
+  }
+  return result;
+}
+function signatureCounts2(items) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const item of items) counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1);
+  return counts;
+}
+function selectedMethod2(call, source) {
+  const fn = call.childForFieldName("function");
+  if (fn === null) return void 0;
+  if (fn.type === "identifier") return sourceText(fn, source);
+  if (fn.type !== "selector_expression") return void 0;
+  const field = fn.childForFieldName("field");
+  return field === null ? void 0 : sourceText(field, source);
+}
+function contractMatchesCall(contract, callText, imports, packageName, fileDirectory) {
+  const reference = new RegExp(`(?:\\b([A-Za-z_]\\w*)\\s*\\.\\s*)?\\b${escapeRegExp4(contract.identifier)}\\b`).exec(callText);
+  if (reference === null) return false;
+  const qualifier = reference[1];
+  if (qualifier === void 0) {
+    return contract.packageName === packageName && contract.directory === fileDirectory;
+  }
+  const importedPath = imports.get(qualifier);
+  if (importedPath === void 0) return false;
+  return importedPath === contract.directory || importedPath.endsWith(`/${contract.directory}`);
+}
+function importAliases(root, source) {
+  const result = /* @__PURE__ */ new Map();
+  for (const spec of descendants(root, "import_spec")) {
+    const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(sourceText(spec, source).trim());
+    if (match === null) continue;
+    const importedPath = match[2];
+    const alias = match[1] ?? importedPath.split("/").pop();
+    if (alias !== "_" && alias !== ".") result.set(alias, importedPath);
+  }
+  return result;
+}
+function successGuarded(call, deferredBody, source) {
+  for (let node = call.parent; node !== null && node.id !== deferredBody.id; node = node.parent) {
+    if (node.type !== "if_statement") continue;
+    const condition = node.childForFieldName("condition");
+    if (condition === null) continue;
+    const text = normalize(sourceText(condition, source));
+    if (/\b(?:success|succeeded|completed)\b/i.test(text)) return true;
+    if (/\b(?:err|error)\s*==\s*nil\b|\bnil\s*==\s*(?:err|error)\b/.test(text)) return true;
+    if (/\bresult\s*!=\s*nil\b|\bnil\s*!=\s*result\b/.test(text)) return true;
+  }
+  return false;
+}
+function owningFunction(node) {
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (current.type === "func_literal" || current.type === "function_declaration" || current.type === "method_declaration") {
+      return current;
+    }
+  }
+  return void 0;
+}
+function staticallyDead(node, source) {
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (current.type !== "if_statement") continue;
+    const consequence = current.childForFieldName("consequence");
+    const alternative = current.childForFieldName("alternative");
+    const condition = current.childForFieldName("condition");
+    if (condition === null) continue;
+    const value = normalize(sourceText(condition, source)).replace(/^\((.*)\)$/s, "$1");
+    if (value === "false" && consequence !== null && contains(consequence, node)) return true;
+    if (value === "true" && alternative !== null && contains(alternative, node)) return true;
+  }
+  return false;
+}
+function contains(parent, child) {
+  return parent.startIndex <= child.startIndex && child.endIndex <= parent.endIndex;
+}
+function changedAnchor3(file, nodes) {
+  for (const node of nodes) {
+    const start2 = node.startPosition.row + 1;
+    const end = node.endPosition.row + 1;
+    if (file.status === "repository" || file.status === "added") return start2;
+    for (let line = start2; line <= end; line += 1) {
+      if (file.changedLines.has(line)) return line;
+    }
+  }
+  return void 0;
+}
+function lineText3(source, line) {
+  return source.split("\n")[line - 1]?.trim().slice(0, 300) ?? "";
+}
+function normalize(text) {
+  return stripComments(text).replace(/\s+/g, "");
+}
+function stripComments(text) {
+  return text.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, " ");
+}
+function escapeRegExp4(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function directory(path) {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "" : path.slice(0, separator);
+}
+
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
   const signals = [];
@@ -22859,6 +23112,7 @@ async function analyzeDiscovery(discovery) {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await successLatencyOnNonSuccessPathSignals(discovery.files));
   signals.push(...await cancellationEscalationSignals(discovery.files));
   signals.push(...await lossyErrorClassificationSignals(discovery.files));
   return {
@@ -23098,7 +23352,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.11",
+    version: "0.0.12",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {

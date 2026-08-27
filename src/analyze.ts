@@ -4,6 +4,7 @@ import { failureCounterWithoutDenominatorSignals } from "./failure-rates.js";
 import { lossyErrorClassificationSignals } from "./lossy-error-classification.js";
 import { metricDurationUnitMismatchSignals } from "./metric-units.js";
 import { parseGo } from "./parser.js";
+import { successLatencyOnNonSuccessPathSignals } from "./success-latency.js";
 import { type Analysis, type Discovery, type PositiveSignal, type Signal, type SourceRevision } from "./types.js";
 
 export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> {
@@ -38,6 +39,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     const file = fileByPath.get(item.path);
     return file !== undefined && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await successLatencyOnNonSuccessPathSignals(discovery.files));
   signals.push(...await cancellationEscalationSignals(discovery.files));
   signals.push(...await lossyErrorClassificationSignals(discovery.files));
 
