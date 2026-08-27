@@ -67,11 +67,21 @@ func processFire(req Request) (*Result, error) {
 }
 `;
 
+const highCardinalityFixture = `package metrics
+import "github.com/prometheus/client_golang/prometheus"
+var docMarkers = []string{"example url", "documentation", "error page"}
+var requests = prometheus.NewCounterVec(
+  prometheus.CounterOpts{Name: "requests_total"},
+  []string{"method", "request_id"},
+)
+`;
+
 test("the published runtime executes without node_modules", async () => {
   const artifact = await mkdtemp(join(tmpdir(), "go-observability-artifact-"));
   const repository = await mkdtemp(join(tmpdir(), "go-observability-target-"));
   const lossyOnlyRepository = await mkdtemp(join(tmpdir(), "go-observability-lossy-target-"));
   const successLatencyRepository = await mkdtemp(join(tmpdir(), "go-observability-success-latency-target-"));
+  const highCardinalityRepository = await mkdtemp(join(tmpdir(), "go-observability-cardinality-target-"));
   const entrypoint = join(artifact, "dist", "index.js");
   const input = join(artifact, "input.json");
   const output = join(artifact, "output.json");
@@ -94,6 +104,7 @@ test("the published runtime executes without node_modules", async () => {
   await mkdir(join(successLatencyRepository, "service", "scheduler"), { recursive: true });
   await writeFile(join(successLatencyRepository, "common", "metrics", "defs.go"), successLatencyMetricFixture);
   await writeFile(join(successLatencyRepository, "service", "scheduler", "activity.go"), successLatencyActivityFixture);
+  await writeFile(join(highCardinalityRepository, "metrics.go"), highCardinalityFixture);
   await writeFile(input, `${JSON.stringify({ source: { path: repository } })}\n`);
 
   const bundle = await readFile(entrypoint, "utf8");
@@ -126,7 +137,7 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/observability");
-  assert.equal(envelope.result.adversary.version, "0.0.12");
+  assert.equal(envelope.result.adversary.version, "0.0.13");
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-obs.logging.normal-cancellation-as-error",
     "go-obs.logging.lossy-parse-classification",
@@ -169,4 +180,24 @@ test("the published runtime executes without node_modules", async () => {
     severity: finding.severity,
   })), [{ ruleId: "go-obs.metrics.success-latency-on-non-success-paths", severity: "medium" }]);
   assert.equal(successLatencyEnvelope.result.opinion.ship, false);
+
+  const highCardinalityInput = join(artifact, "high-cardinality-input.json");
+  const highCardinalityOutput = join(artifact, "high-cardinality-output.json");
+  await writeFile(highCardinalityInput, `${JSON.stringify({ source: { path: highCardinalityRepository } })}\n`);
+  await execute(process.execPath, [entrypoint], {
+    cwd: artifact,
+    env: {
+      ...process.env,
+      ADVERSARY_INPUT: highCardinalityInput,
+      ADVERSARY_OUTPUT: highCardinalityOutput,
+      ADVERSARY_REPO: highCardinalityRepository,
+    },
+  });
+  const highCardinalityEnvelope = JSON.parse(await readFile(highCardinalityOutput, "utf8"));
+  assert.deepEqual(highCardinalityEnvelope.result.findings.map((finding: { ruleId: string; severity: string }) => ({
+    ruleId: finding.ruleId,
+    severity: finding.severity,
+  })), [{ ruleId: "go-obs.metrics.high-cardinality", severity: "high" }]);
+  assert.equal(highCardinalityEnvelope.result.findings[0].evidence.length, 1);
+  assert.equal(highCardinalityEnvelope.result.opinion.ship, false);
 });

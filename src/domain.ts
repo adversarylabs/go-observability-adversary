@@ -169,7 +169,6 @@ export const domain: DomainDefinition = {
   analyze(file) {
     return {
       signals: [
-        ...highCardinalitySignals(file),
         ...spanNotEndedSignals(file),
         ...recoverSwallowSignals(file),
         ...slogArgsMismatchSignals(file),
@@ -204,32 +203,6 @@ export const domain: DomainDefinition = {
     };
   },
 };
-
-function highCardinalitySignals(file: SourceRevision): Signal[] {
-  return [
-    // Label name slices that include unbounded dimensions.
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /\[\]string\s*\{[^}]*(?:user_?id|email|request_?id|session|trace_?id|path|url|error)[^}]*\}/i,
-      () => "This metric declares a request- or user-specific label dimension.",
-    ),
-    // WithLabelValues fed raw request path, user id, or err.Error().
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /WithLabelValues\s*\([^)]*(?:\.URL\.Path|\.URL\.String\s*\(|userID|userId|user_id|err\.Error\s*\(|requestID|request_id)/i,
-      () => "WithLabelValues receives an unbounded request- or user-specific value.",
-    ),
-    // prometheus.Labels{ "user_id": ... } style maps.
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /(?:prometheus\.)?Labels\s*\{[^}]*(?:user_?id|email|path|url|error|request_?id)\s*:/i,
-      () => "A Labels map uses a high-cardinality key.",
-    ),
-  ];
-}
 
 /**
  * OpenTelemetry-style `ctx, span := tracer.Start(...)` without `defer span.End()`
