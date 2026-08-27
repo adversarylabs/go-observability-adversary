@@ -103,9 +103,14 @@ test("requires an established imported context logger", async () => {
   const noContext = reviewed
     .replace('  "context"\n', "")
     .replaceAll("ctx context.Context", "ctx any");
+  const deadLogger = reviewed.replace(
+    '  log.Infof(ctx, "pulling artifact")',
+    '  if false { log.Infof(ctx, "pulling artifact") }',
+  );
   assert.deepEqual(await lossyErrorClassificationSignals([source(noLoggerCall)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(customLogger)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(noContext)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(deadLogger)]), []);
 });
 
 test("requires an immediate non-nil classification under an explicit fallback comment", async () => {
@@ -135,6 +140,28 @@ test("does not generalize to arbitrary failures or returned causes", async () =>
   assert.deepEqual(await lossyErrorClassificationSignals([source(arbitrary)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(propagated)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(wrapped)]), []);
+});
+
+test("rejects unreachable parser relationships and shadowed context bindings", async () => {
+  const deadBlock = reviewed
+    .replace(
+      "  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+      "  if false {\n    ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+    )
+    .replace("  _ = ociManifest", "    _ = ociManifest\n  }");
+  const afterReturn = reviewed.replace(
+    "  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+    "  return nil\n  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+  );
+  const shadowedContext = reviewed
+    .replace(
+      "  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+      "  if enabled() {\n    ctx := fakeContext{}\n    ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+    )
+    .replace("  _ = ociManifest", "    _ = ociManifest\n  }");
+  assert.deepEqual(await lossyErrorClassificationSignals([source(deadBlock)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(afterReturn)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(shadowedContext)]), []);
 });
 
 test("binds aliases for context, errors, parser, and logger imports", async () => {

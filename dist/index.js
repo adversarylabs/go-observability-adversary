@@ -22419,6 +22419,7 @@ function candidates(root, source) {
       for (let index = 0; index < statements.length - 1; index += 1) {
         const assignment = statements[index];
         if (assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") continue;
+        if (!isReachable(assignment, fn, source) || localBindingDeclaredBefore(fn, fn.contextName, assignment.startIndex, source)) continue;
         const parsed = parserAssignment(assignment, source, imports, fn);
         if (parsed === void 0) continue;
         const guard = statements[index + 1];
@@ -22498,6 +22499,7 @@ function contextLoggerPackages(functions, source, imports) {
     if (fn.contextName === void 0) continue;
     for (const call of descendants(fn.body, "call_expression")) {
       if (insideNestedFunction2(call, fn.body)) continue;
+      if (!isReachable(call, fn, source)) continue;
       const selected = selectedCall(call, source);
       if (selected === void 0 || !LOG_METHOD.test(selected.method)) continue;
       const path = imports.aliases.get(selected.receiver);
@@ -22559,6 +22561,10 @@ function bindingDeclaredBefore(fn, name2, before, source) {
   const prefix = source.slice(fn.body.startIndex, before);
   return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp2(name2)}\\s*(?::=|=)`, "m").test(prefix);
 }
+function localBindingDeclaredBefore(fn, name2, before, source) {
+  const prefix = source.slice(fn.body.startIndex, before);
+  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp2(name2)}\\s*(?::=|=)`, "m").test(prefix);
+}
 function insideNestedFunction2(node, boundary) {
   let parent = node.parent;
   while (parent !== null && parent.id !== boundary.id) {
@@ -22566,6 +22572,34 @@ function insideNestedFunction2(node, boundary) {
     parent = parent.parent;
   }
   return false;
+}
+function isReachable(node, fn, source) {
+  let current = node;
+  while (current !== null && current.id !== fn.body.id) {
+    const parent = current.parent;
+    if (parent === null) return false;
+    if (parent.type === "statement_list") {
+      const direct = parent.namedChildren.filter((child) => child.type !== "comment");
+      const index = direct.findIndex((child) => child.id === current.id);
+      if (index >= 0 && direct.slice(0, index).some((prior) => prior.type === "return_statement")) return false;
+    }
+    if (parent.type === "if_statement") {
+      const condition = parent.childForFieldName("condition");
+      const consequence = parent.childForFieldName("consequence");
+      const alternative = parent.childForFieldName("alternative");
+      const value = condition === null ? void 0 : staticBoolean(condition, source);
+      if (current.id === consequence?.id && value === false || current.id === alternative?.id && value === true) return false;
+    }
+    current = parent;
+  }
+  return current?.id === fn.body.id;
+}
+function staticBoolean(node, source) {
+  let text = sourceText(node, source).replace(/\s+/g, "");
+  while (text.startsWith("(") && text.endsWith(")")) text = text.slice(1, -1);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  return void 0;
 }
 function changedAnchor2(file, nodes) {
   if (file.status === "repository" || file.status === "added") return lineOf2(nodes[0]);
