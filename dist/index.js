@@ -15389,15 +15389,15 @@ async function listInScopePaths(repoPath, change, options = {}) {
   const include = options.include ?? (() => true);
   const limit = options.limit !== void 0 && options.limit > 0 ? options.limit : void 0;
   const ignore = new Set(options.ignoreDirectories ?? DEFAULT_IGNORE_DIRECTORIES);
-  let candidates;
+  let candidates2;
   if (change !== null && change.scanMode === "changed") {
-    candidates = change.changedFiles.map(normalizePath2);
+    candidates2 = change.changedFiles.map(normalizePath2);
   } else {
-    candidates = await walkRelative(repoPath, ignore);
+    candidates2 = await walkRelative(repoPath, ignore);
   }
   const out2 = [];
   const seen = /* @__PURE__ */ new Set();
-  for (const path of candidates) {
+  for (const path of candidates2) {
     if (!path || seen.has(path))
       continue;
     if (path.split("/").some((segment) => ignore.has(segment)))
@@ -17095,6 +17095,17 @@ var domain = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.logging.lossy-parse-classification",
+      title: "A parser failure is collapsed into a sentinel without diagnostics",
+      category: "observability",
+      severity: "low",
+      confidence: "high",
+      summary: (count) => `${count} changed parser failure path${count === 1 ? " discards" : "s discard"} the original cause while returning a classification sentinel.`,
+      whyItMatters: "A deliberate fallback can share one parser error path with malformed or otherwise unexpected input; collapsing both into a sentinel removes the only evidence that distinguishes them.",
+      impact: "Operators can see the fallback classification but cannot diagnose why parsing failed or distinguish expected alternate formats from corrupted input.",
+      recommendation: "Log the original parser error at debug level immediately before returning the sentinel, or retain the cause in the returned error when the caller contract allows it."
+    },
+    {
       id: "go-obs.logging.normal-cancellation-as-error",
       title: "Normal cancellation is re-logged as an error",
       category: "observability",
@@ -17322,8 +17333,8 @@ function recoverSwallowSignals(file) {
       /(?:_|\w+)\s*=\s*recover\s*\(\s*\)\s*$/,
       () => "recover result is discarded without telemetry."
     ).filter((s) => {
-      const lineText2 = file.current.split("\n")[s.line - 1] ?? "";
-      return !/\b(?:log|slog|logger|fmt)\./.test(lineText2);
+      const lineText3 = file.current.split("\n")[s.line - 1] ?? "";
+      return !/\b(?:log|slog|logger|fmt)\./.test(lineText3);
     })
   );
   const seen = /* @__PURE__ */ new Set();
@@ -21446,11 +21457,11 @@ var Query = class {
 var languagePromise;
 function assetPath(name2) {
   const currentDirectory = dirname2(fileURLToPath(import.meta.url));
-  const candidates = [
+  const candidates2 = [
     join3(currentDirectory, name2),
     join3(currentDirectory, "..", "node_modules", name2 === "web-tree-sitter.wasm" ? "web-tree-sitter" : "tree-sitter-go", name2)
   ];
-  const match = candidates.find(existsSync);
+  const match = candidates2.find(existsSync);
   if (match === void 0) throw new Error(`Unable to locate parser asset ${name2}`);
   return match;
 }
@@ -22338,6 +22349,243 @@ function metricDirectory(path) {
   return separator === -1 ? "" : path.slice(0, separator);
 }
 
+// src/lossy-error-classification.ts
+var PARSER_METHOD = /^(?:Parse\w*|Decode\w*|Unmarshal\w*|\w*From(?:Manifest|Blob|JSON|YAML|XML))$/;
+var ERROR_NAME = /^(?:err|\w*(?:Err|Error))$/;
+var CLASSIFICATION_COMMENT = /\b(?:assum(?:e|ing)|treat(?:ed|ing)?|classif(?:y|ied|ication)|fallback|conservativ(?:e|ely)|unable to parse|expected to fail|not an?\b)\b/i;
+var LOG_METHOD = /^(?:Debug|Debugf|Debugw|DebugContext|Info|Infof|Infow|InfoContext|Warn|Warnf|Warnw|WarnContext|Error|Errorf|Errorw|ErrorContext)$/;
+async function lossyErrorClassificationSignals(files) {
+  const signals = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const currentTree = await parseGo(file.current);
+    const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+    try {
+      if (currentTree.rootNode.hasError || previousTree?.rootNode.hasError === true) continue;
+      const current = candidates(currentTree.rootNode, file.current);
+      const previousCounts = signatureCounts(
+        previousTree === void 0 ? [] : candidates(previousTree.rootNode, file.previous)
+      );
+      const currentCounts = /* @__PURE__ */ new Map();
+      for (const item of current) {
+        const occurrence = (currentCounts.get(item.signature) ?? 0) + 1;
+        currentCounts.set(item.signature, occurrence);
+        if (file.status === "modified" && occurrence <= (previousCounts.get(item.signature) ?? 0)) continue;
+        const anchor = changedAnchor2(file, [item.assignment, item.guard, item.returned]);
+        if (anchor === void 0) continue;
+        signals.push({
+          ruleId: "go-obs.logging.lossy-parse-classification",
+          path: file.path,
+          line: anchor,
+          message: `${item.fn.name} classifies ${item.parserPackage}.${item.parserMethod} failures as ${item.sentinel} but discards the parser error without diagnostics.`,
+          snippet: lineText2(file.current, anchor),
+          data: {
+            function: item.fn.name,
+            parser: `${item.parserPackage}.${item.parserMethod}`,
+            discardedError: item.errorName,
+            returnedSentinel: item.sentinel,
+            logger: item.loggerPackage,
+            classification: item.comment,
+            scope: "same-function-immediate-parser-classification"
+          }
+        });
+      }
+    } finally {
+      previousTree?.delete();
+      currentTree.delete();
+    }
+  }
+  return signals;
+}
+function signatureCounts(items) {
+  const result = /* @__PURE__ */ new Map();
+  for (const item of items) result.set(item.signature, (result.get(item.signature) ?? 0) + 1);
+  return result;
+}
+function candidates(root, source) {
+  const imports = importedAliases(root, source);
+  if (imports.context === void 0 || imports.errors === void 0) return [];
+  const functions = functionInfos2(root, source, imports.context);
+  const sentinels = packageErrorSentinels(root, source, imports.errors);
+  if (sentinels.size === 0) return [];
+  const loggers = contextLoggerPackages(functions, source, imports);
+  if (loggers.size === 0) return [];
+  const result = [];
+  for (const fn of functions) {
+    if (fn.contextName === void 0) continue;
+    const blocks = descendants(fn.body, "block").filter((block) => block.id === fn.body.id || !insideNestedFunction2(block, fn.body));
+    for (const block of blocks) {
+      const statements = directStatements2(block);
+      for (let index = 0; index < statements.length - 1; index += 1) {
+        const assignment = statements[index];
+        if (assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") continue;
+        const parsed = parserAssignment(assignment, source, imports, fn);
+        if (parsed === void 0) continue;
+        const guard = statements[index + 1];
+        if (guard.type !== "if_statement" || !isNonNilGuard(guard, parsed.errorName, source)) continue;
+        const consequence = guard.childForFieldName("consequence");
+        if (consequence === null) continue;
+        const branch = directStatements2(consequence);
+        const returned = branch.find((node) => node.type === "return_statement");
+        if (returned === void 0 || branch.length !== 1) continue;
+        const sentinel = returnedIdentifier(returned, source);
+        if (sentinel === void 0 || !sentinels.has(sentinel)) continue;
+        const comment = classificationComment(source.slice(assignment.endIndex, guard.startIndex));
+        if (comment === void 0) continue;
+        const loggerPackage = [...loggers].find((alias) => !bindingDeclaredBefore(fn, alias, assignment.startIndex, source));
+        if (loggerPackage === void 0) continue;
+        result.push({
+          signature: [fn.name, parsed.parserPackage, parsed.parserMethod, parsed.errorName, sentinel].join("|"),
+          fn,
+          assignment,
+          guard,
+          returned,
+          parserPackage: parsed.parserPackage,
+          parserMethod: parsed.parserMethod,
+          errorName: parsed.errorName,
+          sentinel,
+          comment,
+          loggerPackage
+        });
+      }
+    }
+  }
+  return result;
+}
+function importedAliases(root, source) {
+  const aliases = /* @__PURE__ */ new Map();
+  const result = { aliases };
+  for (const spec of descendants(root, "import_spec")) {
+    const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(sourceText(spec, source).trim());
+    if (match === null) continue;
+    const path = match[2];
+    const alias = match[1] ?? path.split("/").pop();
+    if (alias === "_" || alias === ".") continue;
+    aliases.set(alias, path);
+    if (path === "context") result.context = alias;
+    if (path === "errors") result.errors = alias;
+  }
+  return result;
+}
+function functionInfos2(root, source, contextAlias) {
+  return descendants(root, "function_declaration").concat(descendants(root, "method_declaration")).flatMap((node) => {
+    const body2 = node.childForFieldName("body");
+    if (body2 === null) return [];
+    const header = sourceText(node, source).slice(0, body2.startIndex - node.startIndex);
+    const method = /^func\s*\([^)]*\)\s*([A-Za-z_]\w*)\s*\(/.exec(header);
+    const plain = /^func\s+([A-Za-z_]\w*)\s*\(/.exec(header);
+    const name2 = method?.[1] ?? plain?.[1];
+    if (name2 === void 0) return [];
+    const contextMatch = new RegExp(`\\b([A-Za-z_]\\w*)\\s+${escapeRegExp2(contextAlias)}\\.Context\\b`).exec(header);
+    return [{ node, body: body2, name: name2, ...contextMatch === null ? {} : { contextName: contextMatch[1] } }];
+  });
+}
+function packageErrorSentinels(root, source, errorsAlias) {
+  const result = /* @__PURE__ */ new Set();
+  for (const declaration of root.namedChildren.filter((node) => node.type === "var_declaration")) {
+    for (const spec of declaration.namedChildren.filter((node) => node.type === "var_spec")) {
+      const match = new RegExp(
+        `^\\s*([A-Za-z_]\\w*)\\s*=\\s*${escapeRegExp2(errorsAlias)}\\.New\\s*\\(`
+      ).exec(sourceText(spec, source));
+      if (match !== null) result.add(match[1]);
+    }
+  }
+  return result;
+}
+function contextLoggerPackages(functions, source, imports) {
+  const result = /* @__PURE__ */ new Set();
+  for (const fn of functions) {
+    if (fn.contextName === void 0) continue;
+    for (const call of descendants(fn.body, "call_expression")) {
+      if (insideNestedFunction2(call, fn.body)) continue;
+      const selected = selectedCall(call, source);
+      if (selected === void 0 || !LOG_METHOD.test(selected.method)) continue;
+      const path = imports.aliases.get(selected.receiver);
+      if (path === void 0 || !/(?:^|\/)(?:log|logging|logrus|zap)(?:\/|$)/i.test(path)) continue;
+      if (bindingDeclaredBefore(fn, selected.receiver, call.startIndex, source)) continue;
+      const args2 = call.childForFieldName("arguments");
+      if (args2 === null) continue;
+      const first = args2.namedChild(0);
+      if (first !== null && sourceText(first, source).trim() === fn.contextName) result.add(selected.receiver);
+    }
+  }
+  return result;
+}
+function parserAssignment(statement, source, imports, fn) {
+  const left = statement.namedChild(0);
+  const right = statement.namedChild(1);
+  if (left === null || right === null || left.type !== "expression_list" || right.type !== "expression_list") return void 0;
+  if (left.namedChildCount !== 2 || right.namedChildCount !== 1) return void 0;
+  const errorNode = left.namedChild(1);
+  const call = right.namedChild(0);
+  if (errorNode === null || call === null || errorNode.type !== "identifier" || call.type !== "call_expression") return void 0;
+  const errorName = sourceText(errorNode, source);
+  if (!ERROR_NAME.test(errorName)) return void 0;
+  const selected = selectedCall(call, source);
+  if (selected === void 0 || !PARSER_METHOD.test(selected.method)) return void 0;
+  if (!imports.aliases.has(selected.receiver) || bindingDeclaredBefore(fn, selected.receiver, call.startIndex, source)) return void 0;
+  return { parserPackage: selected.receiver, parserMethod: selected.method, errorName };
+}
+function selectedCall(call, source) {
+  const fn = call.childForFieldName("function");
+  if (fn === null || fn.type !== "selector_expression") return void 0;
+  const match = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/.exec(sourceText(fn, source).replace(/\s+/g, ""));
+  return match === null ? void 0 : { receiver: match[1], method: match[2] };
+}
+function isNonNilGuard(statement, errorName, source) {
+  const condition = statement.childForFieldName("condition");
+  if (condition === null) return false;
+  const compact = sourceText(condition, source).replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+  return compact === `${errorName}!=nil` || compact === `nil!=${errorName}`;
+}
+function returnedIdentifier(statement, source) {
+  const values = statement.namedChild(0);
+  if (values === null || values.type !== "expression_list" || values.namedChildCount !== 1) return void 0;
+  const value = values.namedChild(0);
+  return value?.type === "identifier" ? sourceText(value, source) : void 0;
+}
+function directStatements2(block) {
+  const list = block.namedChildren.find((node) => node.type === "statement_list");
+  return list?.namedChildren.filter((node) => node.type !== "comment") ?? [];
+}
+function classificationComment(gap) {
+  const comments = gap.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g) ?? [];
+  const match = comments.find((comment) => CLASSIFICATION_COMMENT.test(comment));
+  return match?.replace(/^\/[/\*]\s*|\s*\*\/$/g, "").trim().slice(0, 240);
+}
+function bindingDeclaredBefore(fn, name2, before, source) {
+  const header = sourceText(fn.node, source).slice(0, fn.body.startIndex - fn.node.startIndex);
+  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp2(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
+  const prefix = source.slice(fn.body.startIndex, before);
+  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp2(name2)}\\s*(?::=|=)`, "m").test(prefix);
+}
+function insideNestedFunction2(node, boundary) {
+  let parent = node.parent;
+  while (parent !== null && parent.id !== boundary.id) {
+    if (parent.type === "func_literal" || parent.type === "function_declaration" || parent.type === "method_declaration") return true;
+    parent = parent.parent;
+  }
+  return false;
+}
+function changedAnchor2(file, nodes) {
+  if (file.status === "repository" || file.status === "added") return lineOf2(nodes[0]);
+  for (const node of nodes) {
+    for (let line = lineOf2(node); line <= node.endPosition.row + 1; line += 1) {
+      if (file.changedLines.has(line)) return line;
+    }
+  }
+  return void 0;
+}
+function lineOf2(node) {
+  return node.startPosition.row + 1;
+}
+function lineText2(source, line) {
+  return source.split("\n")[line - 1]?.trim().slice(0, 300) ?? "";
+}
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/metric-units.ts
 function metricDurationUnitMismatchSignals(files) {
   const definitions = /* @__PURE__ */ new Map();
@@ -22353,13 +22601,13 @@ function metricDurationUnitMismatchSignals(files) {
   for (const file of files) {
     const byVariable = /* @__PURE__ */ new Map();
     for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
-      const candidates = byVariable.get(definition.variable) ?? [];
-      candidates.push(definition);
-      byVariable.set(definition.variable, candidates);
+      const candidates2 = byVariable.get(definition.variable) ?? [];
+      candidates2.push(definition);
+      byVariable.set(definition.variable, candidates2);
     }
-    for (const candidates of byVariable.values()) {
-      const sameFile = candidates.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates.length === 1 ? candidates[0] : void 0;
+    for (const candidates2 of byVariable.values()) {
+      const sameFile = candidates2.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates2.length === 1 ? candidates2[0] : void 0;
       if (definition === void 0) continue;
       signals.push(...observationMismatches(file, definition));
     }
@@ -22398,7 +22646,7 @@ function declaredDurationUnit(metricName) {
   return null;
 }
 function observationMismatches(file, definition) {
-  const variable = escapeRegExp2(definition.variable);
+  const variable = escapeRegExp3(definition.variable);
   const observe = new RegExp(
     `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
     "g"
@@ -22468,7 +22716,7 @@ function metricDirectory2(path) {
   const separator = path.lastIndexOf("/");
   return separator === -1 ? "" : path.slice(0, separator);
 }
-function escapeRegExp2(value) {
+function escapeRegExp3(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function deduplicate(signals) {
@@ -22513,6 +22761,7 @@ async function analyzeDiscovery(discovery) {
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));
   signals.push(...await cancellationEscalationSignals(discovery.files));
+  signals.push(...await lossyErrorClassificationSignals(discovery.files));
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
@@ -22750,7 +22999,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.9",
+    version: "0.0.11",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {

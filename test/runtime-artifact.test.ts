@@ -28,6 +28,24 @@ func (w *worker) handle(ctx context.Context, d delivery) error {
 }
 `;
 
+const lossyClassificationFixture = `package sample
+import (
+  "context"
+  "errors"
+  "example.com/project/internal/log"
+  "example.com/parser/manifest"
+)
+var ErrIsAnImage = errors.New("reference is an image")
+func pull(ctx context.Context) { log.Infof(ctx, "pulling") }
+func ensure(ctx context.Context, source []byte) error {
+  parsed, err := manifest.ParseManifest(source)
+  // Unable to parse the artifact manifest, assume an image.
+  if err != nil { return ErrIsAnImage }
+  _ = parsed
+  return nil
+}
+`;
+
 test("the published runtime executes without node_modules", async () => {
   const artifact = await mkdtemp(join(tmpdir(), "go-observability-artifact-"));
   const repository = await mkdtemp(join(tmpdir(), "go-observability-target-"));
@@ -47,6 +65,7 @@ test("the published runtime executes without node_modules", async () => {
   await copyFile(join(projectRoot, "THIRD_PARTY_NOTICES.md"), join(artifact, "THIRD_PARTY_NOTICES.md"));
   await writeFile(join(artifact, "package.json"), '{"type":"module"}\n');
   await writeFile(join(repository, "main.go"), cancellationFixture);
+  await writeFile(join(repository, "classification.go"), lossyClassificationFixture);
   await writeFile(input, `${JSON.stringify({ source: { path: repository } })}\n`);
 
   const bundle = await readFile(entrypoint, "utf8");
@@ -79,8 +98,9 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/observability");
-  assert.equal(envelope.result.adversary.version, "0.0.9");
+  assert.equal(envelope.result.adversary.version, "0.0.11");
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-obs.logging.normal-cancellation-as-error",
+    "go-obs.logging.lossy-parse-classification",
   ]);
 });

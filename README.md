@@ -11,7 +11,7 @@ available evidence does not justify a finding.
 
 ## Scope
 
-It evaluates changed Go logging, metrics, tracing, and panic-recovery code for signal correctness, cardinality, lifecycle, and context propagation.
+It evaluates changed Go logging, metrics, tracing, and panic-recovery code for signal correctness, cardinality, lifecycle, and context propagation. The narrow missing-diagnostic exception is a proven parser failure that changed code deliberately collapses into a sentinel while discarding the cause despite an established context logger; it does not ask for logs merely because a branch can fail.
 
 The complete detector or review inventory is maintained in
 [CHECKS.md](CHECKS.md).
