@@ -159,9 +159,34 @@ test("rejects unreachable parser relationships and shadowed context bindings", a
       "  if enabled() {\n    ctx := fakeContext{}\n    ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
     )
     .replace("  _ = ociManifest", "    _ = ociManifest\n  }");
+  const afterBuiltinPanic = reviewed.replace(
+    "  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+    '  panic("stop")\n  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)',
+  );
+  const localPanic = afterBuiltinPanic.replace(
+    "func (s *Store) EnsureNotContainerImage(ctx context.Context, manifestBytes []byte) error {",
+    "func (s *Store) EnsureNotContainerImage(ctx context.Context, manifestBytes []byte) error {\n  panic := func(any) {}",
+  );
+  const packagePanic = afterBuiltinPanic.replace(
+    "type Store struct{}",
+    "type Store struct{}\nfunc panic(any) {}",
+  );
+  const siblingPanicShadow = afterBuiltinPanic.replace(
+    '  panic("stop")',
+    '  { panic := func(any) {}; _ = panic }\n  panic("stop")',
+  );
+  const packagePanicValue = afterBuiltinPanic.replace(
+    "type Store struct{}",
+    "type Store struct{}\nvar panic = func(any) {}",
+  );
   assert.deepEqual(await lossyErrorClassificationSignals([source(deadBlock)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(afterReturn)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(shadowedContext)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(afterBuiltinPanic)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(siblingPanicShadow)]), []);
+  assert.equal((await lossyErrorClassificationSignals([source(localPanic)])).length, 1);
+  assert.equal((await lossyErrorClassificationSignals([source(packagePanic)])).length, 1);
+  assert.equal((await lossyErrorClassificationSignals([source(packagePanicValue)])).length, 1);
 });
 
 test("binds aliases for context, errors, parser, and logger imports", async () => {

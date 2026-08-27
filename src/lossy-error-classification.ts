@@ -294,7 +294,7 @@ function isReachable(node: Node, fn: FunctionInfo, source: string): boolean {
     if (parent.type === "statement_list") {
       const direct: Node[] = parent.namedChildren.filter((child: Node) => child.type !== "comment");
       const index = direct.findIndex((child) => child.id === current!.id);
-      if (index >= 0 && direct.slice(0, index).some((prior) => prior.type === "return_statement")) return false;
+      if (index >= 0 && direct.slice(0, index).some((prior) => definitelyTerminates(prior, fn, source))) return false;
     }
     if (parent.type === "if_statement") {
       const condition = parent.childForFieldName("condition");
@@ -315,6 +315,72 @@ function staticBoolean(node: Node, source: string): boolean | undefined {
   if (text === "true") return true;
   if (text === "false") return false;
   return undefined;
+}
+
+function definitelyTerminates(statement: Node, fn: FunctionInfo, source: string): boolean {
+  if (statement.type === "return_statement") return true;
+  if (statement.type !== "expression_statement") return false;
+  const expression = statement.namedChild(0);
+  if (expression?.type !== "call_expression") return false;
+  const callee = expression.childForFieldName("function");
+  if (callee === null || callee.type !== "identifier" || sourceText(callee, source) !== "panic") return false;
+  return !lexicallyDeclaredBefore(fn, "panic", expression, source) &&
+    !packageDeclaresName(fn.node, "panic", source);
+}
+
+function lexicallyDeclaredBefore(fn: FunctionInfo, name: string, use: Node, source: string): boolean {
+  const header = sourceText(fn.node, source).slice(0, fn.body.startIndex - fn.node.startIndex);
+  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp(name)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
+  let current: Node | null = use;
+  while (current !== null && current.id !== fn.body.id) {
+    const parent: Node | null = current.parent;
+    if (parent === null) return false;
+    if (parent.type === "statement_list") {
+      const direct: Node[] = parent.namedChildren.filter((child: Node) => child.type !== "comment");
+      const index = direct.findIndex((child) => child.id === current!.id);
+      if (index >= 0 && direct.slice(0, index).some((prior) => declaresName(prior, name, source))) return true;
+    } else if (current.type === "block") {
+      const preceding = parent.namedChildren.slice(0, parent.namedChildren.findIndex((child) => child.id === current!.id));
+      if (preceding.some((candidate) => declaresName(candidate, name, source))) return true;
+    }
+    current = parent;
+  }
+  return false;
+}
+
+function declaresName(node: Node, name: string, source: string): boolean {
+  if (node.type === "short_var_declaration") {
+    const left = node.namedChild(0);
+    return left?.type === "expression_list" && left.namedChildren.some((child) =>
+      child.type === "identifier" && sourceText(child, source) === name);
+  }
+  if (node.type === "var_declaration" || node.type === "const_declaration") {
+    return node.namedChildren.some((spec) => spec.namedChildren.some((child) =>
+      child.type === "identifier" && sourceText(child, source) === name));
+  }
+  if (node.type === "range_clause" || node.type === "receive_statement") {
+    const declaration = sourceText(node, source).split(":=", 1)[0];
+    return sourceText(node, source).includes(":=") &&
+      new RegExp(`(?:^|,)\\s*${escapeRegExp(name)}\\s*(?:,|$)`).test(declaration ?? "");
+  }
+  return false;
+}
+
+function packageDeclaresName(node: Node, name: string, source: string): boolean {
+  let root = node;
+  while (root.parent !== null) root = root.parent;
+  return root.namedChildren.some((child) => {
+    if (child.type === "function_declaration") {
+      return new RegExp(`^func\\s+${escapeRegExp(name)}\\s*\\(`).test(sourceText(child, source));
+    }
+    if (child.type === "var_declaration" || child.type === "const_declaration") {
+      return declaresName(child, name, source);
+    }
+    if (child.type === "type_declaration") {
+      return new RegExp(`^type\\s+${escapeRegExp(name)}\\b`).test(sourceText(child, source));
+    }
+    return false;
+  });
 }
 
 function changedAnchor(file: SourceRevision, nodes: Node[]): number | undefined {

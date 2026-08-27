@@ -22581,7 +22581,7 @@ function isReachable(node, fn, source) {
     if (parent.type === "statement_list") {
       const direct = parent.namedChildren.filter((child) => child.type !== "comment");
       const index = direct.findIndex((child) => child.id === current.id);
-      if (index >= 0 && direct.slice(0, index).some((prior) => prior.type === "return_statement")) return false;
+      if (index >= 0 && direct.slice(0, index).some((prior) => definitelyTerminates(prior, fn, source))) return false;
     }
     if (parent.type === "if_statement") {
       const condition = parent.childForFieldName("condition");
@@ -22600,6 +22600,64 @@ function staticBoolean(node, source) {
   if (text === "true") return true;
   if (text === "false") return false;
   return void 0;
+}
+function definitelyTerminates(statement, fn, source) {
+  if (statement.type === "return_statement") return true;
+  if (statement.type !== "expression_statement") return false;
+  const expression = statement.namedChild(0);
+  if (expression?.type !== "call_expression") return false;
+  const callee = expression.childForFieldName("function");
+  if (callee === null || callee.type !== "identifier" || sourceText(callee, source) !== "panic") return false;
+  return !lexicallyDeclaredBefore(fn, "panic", expression, source) && !packageDeclaresName2(fn.node, "panic", source);
+}
+function lexicallyDeclaredBefore(fn, name2, use, source) {
+  const header = sourceText(fn.node, source).slice(0, fn.body.startIndex - fn.node.startIndex);
+  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp2(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
+  let current = use;
+  while (current !== null && current.id !== fn.body.id) {
+    const parent = current.parent;
+    if (parent === null) return false;
+    if (parent.type === "statement_list") {
+      const direct = parent.namedChildren.filter((child) => child.type !== "comment");
+      const index = direct.findIndex((child) => child.id === current.id);
+      if (index >= 0 && direct.slice(0, index).some((prior) => declaresName(prior, name2, source))) return true;
+    } else if (current.type === "block") {
+      const preceding = parent.namedChildren.slice(0, parent.namedChildren.findIndex((child) => child.id === current.id));
+      if (preceding.some((candidate) => declaresName(candidate, name2, source))) return true;
+    }
+    current = parent;
+  }
+  return false;
+}
+function declaresName(node, name2, source) {
+  if (node.type === "short_var_declaration") {
+    const left = node.namedChild(0);
+    return left?.type === "expression_list" && left.namedChildren.some((child) => child.type === "identifier" && sourceText(child, source) === name2);
+  }
+  if (node.type === "var_declaration" || node.type === "const_declaration") {
+    return node.namedChildren.some((spec) => spec.namedChildren.some((child) => child.type === "identifier" && sourceText(child, source) === name2));
+  }
+  if (node.type === "range_clause" || node.type === "receive_statement") {
+    const declaration = sourceText(node, source).split(":=", 1)[0];
+    return sourceText(node, source).includes(":=") && new RegExp(`(?:^|,)\\s*${escapeRegExp2(name2)}\\s*(?:,|$)`).test(declaration ?? "");
+  }
+  return false;
+}
+function packageDeclaresName2(node, name2, source) {
+  let root = node;
+  while (root.parent !== null) root = root.parent;
+  return root.namedChildren.some((child) => {
+    if (child.type === "function_declaration") {
+      return new RegExp(`^func\\s+${escapeRegExp2(name2)}\\s*\\(`).test(sourceText(child, source));
+    }
+    if (child.type === "var_declaration" || child.type === "const_declaration") {
+      return declaresName(child, name2, source);
+    }
+    if (child.type === "type_declaration") {
+      return new RegExp(`^type\\s+${escapeRegExp2(name2)}\\b`).test(sourceText(child, source));
+    }
+    return false;
+  });
 }
 function changedAnchor2(file, nodes) {
   if (file.status === "repository" || file.status === "added") return lineOf2(nodes[0]);
