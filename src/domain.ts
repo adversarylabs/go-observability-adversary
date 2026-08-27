@@ -71,6 +71,21 @@ export const domain: DomainDefinition = {
         "Convert the observed duration to the unit named by the metric, normally seconds for Prometheus durations.",
     },
     {
+      id: "go-obs.metrics.success-latency-on-non-success-paths",
+      title: "A success-latency distribution includes skipped outcomes",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        `${count} success-latency metric${count === 1 ? " is" : "s are"} deferred across proven non-success return paths.`,
+      whyItMatters:
+        "Latency histograms define which population their quantiles describe; mixing skipped work into a successful-completion distribution changes that population.",
+      impact:
+        "Dashboards overstate or distort completion latency, and p95/p99 no longer describe successful operations when skip volume changes.",
+      recommendation:
+        "Emit the latency observation only after the named completion succeeds, or attach a bounded outcome dimension and filter dashboards by outcome.",
+    },
+    {
       id: "go-obs.metrics.high-cardinality",
       title: "A metric label has unbounded cardinality",
       category: "observability",

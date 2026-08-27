@@ -46,10 +46,32 @@ func ensure(ctx context.Context, source []byte) error {
 }
 `;
 
+const successLatencyMetricFixture = `package metrics
+// SchedulerFireLatencyPerDomainHistogram measures scheduler lag to StartWorkflow completion.
+const SchedulerFireLatencyPerDomainHistogram = 42
+`;
+
+const successLatencyActivityFixture = `package scheduler
+import (
+  "time"
+  "example.com/project/common/metrics"
+)
+func processFire(req Request) (*Result, error) {
+  defer func() {
+    metrics.ExponentialHistogram(metrics.SchedulerFireLatencyPerDomainHistogram, time.Since(req.ScheduledTime))
+  }()
+  if req.SkipNew { return &Result{Skipped: true}, nil }
+  response, err := client.StartWorkflowExecution(req)
+  if err != nil { return nil, err }
+  return &Result{RunID: response.RunID}, nil
+}
+`;
+
 test("the published runtime executes without node_modules", async () => {
   const artifact = await mkdtemp(join(tmpdir(), "go-observability-artifact-"));
   const repository = await mkdtemp(join(tmpdir(), "go-observability-target-"));
   const lossyOnlyRepository = await mkdtemp(join(tmpdir(), "go-observability-lossy-target-"));
+  const successLatencyRepository = await mkdtemp(join(tmpdir(), "go-observability-success-latency-target-"));
   const entrypoint = join(artifact, "dist", "index.js");
   const input = join(artifact, "input.json");
   const output = join(artifact, "output.json");
@@ -68,6 +90,10 @@ test("the published runtime executes without node_modules", async () => {
   await writeFile(join(repository, "main.go"), cancellationFixture);
   await writeFile(join(repository, "classification.go"), lossyClassificationFixture);
   await writeFile(join(lossyOnlyRepository, "classification.go"), lossyClassificationFixture);
+  await mkdir(join(successLatencyRepository, "common", "metrics"), { recursive: true });
+  await mkdir(join(successLatencyRepository, "service", "scheduler"), { recursive: true });
+  await writeFile(join(successLatencyRepository, "common", "metrics", "defs.go"), successLatencyMetricFixture);
+  await writeFile(join(successLatencyRepository, "service", "scheduler", "activity.go"), successLatencyActivityFixture);
   await writeFile(input, `${JSON.stringify({ source: { path: repository } })}\n`);
 
   const bundle = await readFile(entrypoint, "utf8");
@@ -100,7 +126,7 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/observability");
-  assert.equal(envelope.result.adversary.version, "0.0.11");
+  assert.equal(envelope.result.adversary.version, "0.0.12");
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-obs.logging.normal-cancellation-as-error",
     "go-obs.logging.lossy-parse-classification",
@@ -124,4 +150,23 @@ test("the published runtime executes without node_modules", async () => {
     severity: finding.severity,
   })), [{ ruleId: "go-obs.logging.lossy-parse-classification", severity: "low" }]);
   assert.equal(lossyEnvelope.result.opinion.ship, true);
+
+  const successLatencyInput = join(artifact, "success-latency-input.json");
+  const successLatencyOutput = join(artifact, "success-latency-output.json");
+  await writeFile(successLatencyInput, `${JSON.stringify({ source: { path: successLatencyRepository } })}\n`);
+  await execute(process.execPath, [entrypoint], {
+    cwd: artifact,
+    env: {
+      ...process.env,
+      ADVERSARY_INPUT: successLatencyInput,
+      ADVERSARY_OUTPUT: successLatencyOutput,
+      ADVERSARY_REPO: successLatencyRepository,
+    },
+  });
+  const successLatencyEnvelope = JSON.parse(await readFile(successLatencyOutput, "utf8"));
+  assert.deepEqual(successLatencyEnvelope.result.findings.map((finding: { ruleId: string; severity: string }) => ({
+    ruleId: finding.ruleId,
+    severity: finding.severity,
+  })), [{ ruleId: "go-obs.metrics.success-latency-on-non-success-paths", severity: "medium" }]);
+  assert.equal(successLatencyEnvelope.result.opinion.ship, false);
 });
