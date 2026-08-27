@@ -90,8 +90,18 @@ test("requires a proven package sentinel constructed with standard errors.New", 
     'const ErrIsAnImage = "image"',
   );
   const customErrors = reviewed.replace('  "errors"', '  errors "example.com/project/errors"');
+  const localShadow = reviewed.replace(
+    "  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+    "  ErrIsAnImage := errors.New(\"local\")\n  ociManifest, err := manifest.OCI1FromManifest(manifestBytes)",
+  );
+  const reassignedPackageValue = reviewed.replace(
+    "type Store struct{}",
+    "type Store struct{}\nfunc replaceSentinel() { ErrIsAnImage = errors.New(\"replacement\") }",
+  );
   assert.deepEqual(await lossyErrorClassificationSignals([source(localValue)]), []);
   assert.deepEqual(await lossyErrorClassificationSignals([source(customErrors)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(localShadow)]), []);
+  assert.deepEqual(await lossyErrorClassificationSignals([source(reassignedPackageValue)]), []);
 });
 
 test("requires an established imported context logger", async () => {

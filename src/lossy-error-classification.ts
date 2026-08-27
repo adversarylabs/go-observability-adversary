@@ -121,7 +121,8 @@ function candidates(root: Node, source: string): Candidate[] {
         const returned = branch.find((node) => node.type === "return_statement");
         if (returned === undefined || branch.length !== 1) continue;
         const sentinel = returnedIdentifier(returned, source);
-        if (sentinel === undefined || !sentinels.has(sentinel)) continue;
+        if (sentinel === undefined || !sentinels.has(sentinel) ||
+            bindingDeclaredBefore(fn, sentinel, returned.startIndex, source)) continue;
         const comment = classificationComment(source.slice(assignment.endIndex, guard.startIndex));
         if (comment === undefined) continue;
         const loggerPackage = [...loggers].find((alias) =>
@@ -186,6 +187,13 @@ function packageErrorSentinels(root: Node, source: string, errorsAlias: string):
         `^\\s*([A-Za-z_]\\w*)\\s*=\\s*${escapeRegExp(errorsAlias)}\\.New\\s*\\(`,
       ).exec(sourceText(spec, source));
       if (match !== null) result.add(match[1]!);
+    }
+  }
+  for (const assignment of descendants(root, "assignment_statement")) {
+    const left = assignment.namedChild(0);
+    if (left?.type !== "expression_list") continue;
+    for (const target of left.namedChildren) {
+      if (target.type === "identifier") result.delete(sourceText(target, source));
     }
   }
   return result;
