@@ -2238,8 +2238,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize2) {
-      if (normalize2 !== false)
+    function getFullPath(resolver, id = "", normalize3) {
+      if (normalize3 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -3635,7 +3635,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize2(uri, options) {
+    function normalize3(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -3928,7 +3928,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize: normalize2,
+      normalize: normalize3,
       resolve: resolve3,
       resolveComponent,
       equal,
@@ -15389,15 +15389,15 @@ async function listInScopePaths(repoPath, change, options = {}) {
   const include = options.include ?? (() => true);
   const limit = options.limit !== void 0 && options.limit > 0 ? options.limit : void 0;
   const ignore = new Set(options.ignoreDirectories ?? DEFAULT_IGNORE_DIRECTORIES);
-  let candidates3;
+  let candidates4;
   if (change !== null && change.scanMode === "changed") {
-    candidates3 = change.changedFiles.map(normalizePath2);
+    candidates4 = change.changedFiles.map(normalizePath2);
   } else {
-    candidates3 = await walkRelative(repoPath, ignore);
+    candidates4 = await walkRelative(repoPath, ignore);
   }
   const out2 = [];
   const seen = /* @__PURE__ */ new Set();
-  for (const path of candidates3) {
+  for (const path of candidates4) {
     if (!path || seen.has(path))
       continue;
     if (path.split("/").some((segment) => ignore.has(segment)))
@@ -17221,7 +17221,6 @@ var domain = {
   analyze(file) {
     return {
       signals: [
-        ...highCardinalitySignals(file),
         ...spanNotEndedSignals(file),
         ...recoverSwallowSignals(file),
         ...slogArgsMismatchSignals(file),
@@ -17256,31 +17255,6 @@ var domain = {
     };
   }
 };
-function highCardinalitySignals(file) {
-  return [
-    // Label name slices that include unbounded dimensions.
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /\[\]string\s*\{[^}]*(?:user_?id|email|request_?id|session|trace_?id|path|url|error)[^}]*\}/i,
-      () => "This metric declares a request- or user-specific label dimension."
-    ),
-    // WithLabelValues fed raw request path, user id, or err.Error().
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /WithLabelValues\s*\([^)]*(?:\.URL\.Path|\.URL\.String\s*\(|userID|userId|user_id|err\.Error\s*\(|requestID|request_id)/i,
-      () => "WithLabelValues receives an unbounded request- or user-specific value."
-    ),
-    // prometheus.Labels{ "user_id": ... } style maps.
-    ...lineSignals(
-      file,
-      "go-obs.metrics.high-cardinality",
-      /(?:prometheus\.)?Labels\s*\{[^}]*(?:user_?id|email|path|url|error|request_?id)\s*:/i,
-      () => "A Labels map uses a high-cardinality key."
-    )
-  ];
-}
 function spanNotEndedSignals(file) {
   const source = file.current;
   const assignRe = /\b(?:[A-Za-z_]\w*|\_)\s*,\s*([A-Za-z_]\w*)\s*:?=\s*[^\n;]*?\.Start\s*\(/g;
@@ -20890,9 +20864,9 @@ function parseAnyPredicate(steps, index, operator, textPredicates) {
     });
   } else {
     const captureName = steps[1].name;
-    const stringValue = steps[2].value;
-    const matches = /* @__PURE__ */ __name((n) => n.text === stringValue, "matches");
-    const doesNotMatch = /* @__PURE__ */ __name((n) => n.text !== stringValue, "doesNotMatch");
+    const stringValue2 = steps[2].value;
+    const matches = /* @__PURE__ */ __name((n) => n.text === stringValue2, "matches");
+    const doesNotMatch = /* @__PURE__ */ __name((n) => n.text !== stringValue2, "doesNotMatch");
     textPredicates[index].push((captures) => {
       const nodes = [];
       for (const c of captures) {
@@ -20994,12 +20968,12 @@ function parseSetDirective(steps, index, setProperties) {
   setProperties[index][steps[1].value] = steps[2]?.value ?? null;
 }
 __name(parseSetDirective, "parseSetDirective");
-function parsePattern(index, stepType, stepValueId, captureNames, stringValues, steps, textPredicates, predicates, setProperties, assertedProperties, refutedProperties) {
+function parsePattern(index, stepType, stepValueId, captureNames, stringValues2, steps, textPredicates, predicates, setProperties, assertedProperties, refutedProperties) {
   if (stepType === PREDICATE_STEP_TYPE_CAPTURE) {
     const name2 = captureNames[stepValueId];
     steps.push({ type: "capture", name: name2 });
   } else if (stepType === PREDICATE_STEP_TYPE_STRING) {
-    steps.push({ type: "string", value: stringValues[stepValueId] });
+    steps.push({ type: "string", value: stringValues2[stepValueId] });
   } else if (steps.length > 0) {
     if (steps[0].type !== "string") {
       throw new Error("Predicates must begin with a literal value");
@@ -21116,7 +21090,7 @@ var Query = class {
     const patternCount = C._ts_query_pattern_count(address);
     const captureNames = new Array(captureCount);
     const captureQuantifiers = new Array(patternCount);
-    const stringValues = new Array(stringCount);
+    const stringValues2 = new Array(stringCount);
     for (let i2 = 0; i2 < captureCount; i2++) {
       const nameAddress = C._ts_query_capture_name_for_id(
         address,
@@ -21141,7 +21115,7 @@ var Query = class {
         TRANSFER_BUFFER
       );
       const nameLength = C.getValue(TRANSFER_BUFFER, "i32");
-      stringValues[i2] = C.UTF8ToString(valueAddress, nameLength);
+      stringValues2[i2] = C.UTF8ToString(valueAddress, nameLength);
     }
     const setProperties = new Array(patternCount);
     const assertedProperties = new Array(patternCount);
@@ -21165,7 +21139,7 @@ var Query = class {
           stepType,
           stepValueId,
           captureNames,
-          stringValues,
+          stringValues2,
           steps,
           textPredicates,
           predicates,
@@ -21468,11 +21442,11 @@ var Query = class {
 var languagePromise;
 function assetPath(name2) {
   const currentDirectory = dirname2(fileURLToPath(import.meta.url));
-  const candidates3 = [
+  const candidates4 = [
     join3(currentDirectory, name2),
     join3(currentDirectory, "..", "node_modules", name2 === "web-tree-sitter.wasm" ? "web-tree-sitter" : "tree-sitter-go", name2)
   ];
-  const match = candidates3.find(existsSync);
+  const match = candidates4.find(existsSync);
   if (match === void 0) throw new Error(`Unable to locate parser asset ${name2}`);
   return match;
 }
@@ -22360,6 +22334,284 @@ function metricDirectory(path) {
   return separator === -1 ? "" : path.slice(0, separator);
 }
 
+// src/high-cardinality.ts
+var PROMETHEUS_PACKAGE = "github.com/prometheus/client_golang/prometheus";
+var VECTOR_CONSTRUCTOR = /^New(?:Counter|Gauge|Histogram|Summary)Vec$/;
+var UNBOUNDED_LABEL = /(?:^|[^a-z0-9])(?:user_?id|email|request_?id|session(?:_?id)?|trace_?id|path|url|error)(?:$|[^a-z0-9])/i;
+async function highCardinalitySignals(files) {
+  const signals = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const currentTree = await parseGo(file.current);
+    const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+    try {
+      if (currentTree.rootNode.hasError || previousTree?.rootNode.hasError === true) continue;
+      const current = candidates(currentTree.rootNode, file.current);
+      const previousCounts = signatureCounts(
+        previousTree === void 0 ? [] : candidates(previousTree.rootNode, file.previous)
+      );
+      const currentCounts = /* @__PURE__ */ new Map();
+      for (const candidate of current) {
+        const occurrence = (currentCounts.get(candidate.signature) ?? 0) + 1;
+        currentCounts.set(candidate.signature, occurrence);
+        if (file.status === "modified" && occurrence <= (previousCounts.get(candidate.signature) ?? 0)) continue;
+        const line = changedAnchor2(file, candidate.evidence);
+        if (line === void 0) continue;
+        signals.push({
+          ruleId: "go-obs.metrics.high-cardinality",
+          path: file.path,
+          line,
+          message: candidate.message,
+          snippet: sourceText(candidate.primary, file.current).trim().slice(0, 300),
+          data: candidate.data
+        });
+      }
+    } finally {
+      previousTree?.delete();
+      currentTree.delete();
+    }
+  }
+  return signals.sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line);
+}
+function candidates(root, source) {
+  const imports = importAliases(root, source);
+  return [
+    ...labelNameCandidates(root, source, imports),
+    ...labelValueCandidates(root, source),
+    ...labelsMapCandidates(root, source, imports)
+  ];
+}
+function labelNameCandidates(root, source, imports) {
+  const result = [];
+  const sliceDefinitions = stringSliceDefinitions(root, source);
+  for (const call of descendants(root, "call_expression")) {
+    const fn = call.childForFieldName("function");
+    const args2 = call.childForFieldName("arguments");
+    if (fn === null || args2 === null || args2.namedChildCount < 2) continue;
+    const selected = prometheusSelection(fn, source, imports);
+    if (selected === void 0 || !VECTOR_CONSTRUCTOR.test(selected.method)) continue;
+    const labelsArg = args2.namedChild(1);
+    if (labelsArg === null) continue;
+    let labels = [];
+    let primary = labelsArg;
+    const evidence = [labelsArg, fn, selected.importNode];
+    if (isStringSlice(labelsArg, source)) {
+      labels = stringValues(labelsArg, source);
+    } else if (labelsArg.type === "identifier") {
+      const name2 = sourceText(labelsArg, source);
+      const definitions = sliceDefinitions.filter(
+        (definition2) => definition2.name === name2 && definitionVisibleAt(definition2, call, source)
+      );
+      if (definitions.length !== 1) continue;
+      const definition = definitions[0];
+      if (bindingReassigned(definition, call, source)) continue;
+      labels = definition.labels;
+      primary = definition.literal;
+      evidence.unshift(definition.literal);
+    } else {
+      continue;
+    }
+    const unbounded = labels.filter((label) => UNBOUNDED_LABEL.test(label));
+    if (unbounded.length === 0) continue;
+    result.push({
+      signature: `names|${selected.method}|${[...labels].map(normalize).sort().join(",")}`,
+      message: "This Prometheus vector declares a request- or user-specific label dimension.",
+      data: { labels: unbounded, boundary: "prometheus-vector-label-names" },
+      primary,
+      evidence
+    });
+  }
+  return result;
+}
+function labelValueCandidates(root, source) {
+  const result = [];
+  for (const call of descendants(root, "call_expression")) {
+    const fn = call.childForFieldName("function");
+    const args2 = call.childForFieldName("arguments");
+    if (fn?.type !== "selector_expression" || args2 === null) continue;
+    const field = fn.childForFieldName("field");
+    if (field === null || sourceText(field, source) !== "WithLabelValues") continue;
+    const unbounded = [];
+    const evidence = [call];
+    for (const argument of args2.namedChildren) {
+      const kind = unboundedValueKind(argument, source);
+      if (kind === void 0) continue;
+      unbounded.push(kind);
+      evidence.unshift(argument);
+    }
+    if (unbounded.length === 0) continue;
+    result.push({
+      signature: `values|${unbounded.join(",")}|${normalize(sourceText(fn, source))}`,
+      message: "WithLabelValues receives an unbounded request- or user-specific value.",
+      data: { values: unbounded, boundary: "with-label-values" },
+      primary: call,
+      evidence
+    });
+  }
+  return result;
+}
+function labelsMapCandidates(root, source, imports) {
+  const result = [];
+  for (const literal of descendants(root, "composite_literal")) {
+    const typeNode = literal.childForFieldName("type") ?? literal.namedChild(0);
+    if (typeNode === null || typeNode.type !== "qualified_type") continue;
+    const typeText = sourceText(typeNode, source).replace(/\s+/g, "");
+    const match = /^([A-Za-z_]\w*)\.Labels$/.exec(typeText);
+    if (match === null) continue;
+    const imported = imports.get(match[1]);
+    if (imported?.path !== PROMETHEUS_PACKAGE || !importAvailableAt(match[1], literal, source)) continue;
+    const body2 = literal.childForFieldName("body") ?? literal.namedChild(1);
+    if (body2 === null) continue;
+    const keys = descendants(body2, "keyed_element").map((element) => element.childForFieldName("key") ?? element.namedChild(0)).filter((node) => node !== null).map((node) => {
+      const literal2 = isStringLiteral(node) ? node : descendants(node, "interpreted_string_literal")[0] ?? descendants(node, "raw_string_literal")[0];
+      return literal2 === void 0 ? void 0 : { node: literal2, value: stringValue(literal2, source) };
+    }).filter((item) => item !== void 0).filter((item) => UNBOUNDED_LABEL.test(item.value));
+    if (keys.length === 0) continue;
+    result.push({
+      signature: `map|${keys.map((item) => normalize(item.value)).sort().join(",")}`,
+      message: "A prometheus.Labels map uses a high-cardinality key.",
+      data: { labels: keys.map((item) => item.value), boundary: "prometheus-labels-map" },
+      primary: literal,
+      evidence: [...keys.map((item) => item.node), typeNode, imported.node]
+    });
+  }
+  return result;
+}
+function stringSliceDefinitions(root, source) {
+  const result = [];
+  for (const literal of descendants(root, "composite_literal")) {
+    if (!isStringSlice(literal, source)) continue;
+    let declaration = literal.parent;
+    while (declaration !== null && !["short_var_declaration", "assignment_statement", "var_spec"].includes(declaration.type)) {
+      if (declaration.type === "call_expression" || owningFunction(declaration)?.id !== owningFunction(literal)?.id) {
+        declaration = null;
+        break;
+      }
+      declaration = declaration.parent;
+    }
+    if (declaration === null) continue;
+    const match = /^(?:var\s+)?([A-Za-z_]\w*)\s*(?::=|=)/s.exec(sourceText(declaration, source).trim());
+    if (match === null) continue;
+    const owner = owningFunction(declaration);
+    result.push({
+      name: match[1],
+      labels: stringValues(literal, source),
+      literal,
+      declaration,
+      ...owner === void 0 ? {} : { owner }
+    });
+  }
+  return result;
+}
+function definitionVisibleAt(definition, call, source) {
+  const callOwner = owningFunction(call);
+  if (definition.owner === void 0) return true;
+  if (callOwner?.id !== definition.owner.id || definition.declaration.startIndex >= call.startIndex) return false;
+  return !bindingDeclaredBetween(definition.owner, definition.name, definition.declaration.endIndex, call.startIndex, source);
+}
+function bindingReassigned(definition, call, source) {
+  const owner = owningFunction(call);
+  if (owner === void 0) return false;
+  return descendants(owner, "assignment_statement").some((assignment) => {
+    if (assignment.id === definition.declaration.id || assignment.startIndex <= definition.declaration.endIndex || assignment.endIndex >= call.startIndex) return false;
+    const left = assignment.childForFieldName("left") ?? assignment.namedChild(0);
+    return left !== null && sourceText(left, source).trim() === definition.name;
+  });
+}
+function bindingDeclaredBetween(owner, name2, start2, end, source) {
+  return descendants(owner, "short_var_declaration").some((declaration) => {
+    if (declaration.startIndex <= start2 || declaration.endIndex >= end) return false;
+    const left = declaration.childForFieldName("left") ?? declaration.namedChild(0);
+    return left !== null && sourceText(left, source).split(",").map((item) => item.trim()).includes(name2);
+  });
+}
+function prometheusSelection(fn, source, imports) {
+  if (fn.type !== "selector_expression") return void 0;
+  const operand = fn.childForFieldName("operand");
+  const field = fn.childForFieldName("field");
+  if (operand?.type !== "identifier" || field === null) return void 0;
+  const alias = sourceText(operand, source);
+  const imported = imports.get(alias);
+  if (imported?.path !== PROMETHEUS_PACKAGE && imported?.path !== `${PROMETHEUS_PACKAGE}/promauto` || !importAvailableAt(alias, fn, source)) return void 0;
+  return { method: sourceText(field, source), importNode: imported.node };
+}
+function importAliases(root, source) {
+  const result = /* @__PURE__ */ new Map();
+  for (const spec of descendants(root, "import_spec")) {
+    const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(sourceText(spec, source).trim());
+    if (match === null) continue;
+    const importedPath = match[2];
+    const alias = match[1] ?? importedPath.split("/").pop();
+    if (alias !== "_" && alias !== ".") result.set(alias, { path: importedPath, node: spec });
+  }
+  return result;
+}
+function importAvailableAt(alias, use, source) {
+  const owner = owningFunction(use);
+  if (owner === void 0) return true;
+  const body2 = owner.childForFieldName("body");
+  if (body2 === null) return false;
+  const header = sourceText(owner, source).slice(0, body2.startIndex - owner.startIndex);
+  if (new RegExp(`[(,]\\s*${escapeRegExp2(alias)}\\s+`).test(header)) return false;
+  const before = source.slice(body2.startIndex, use.startIndex);
+  return !new RegExp(
+    `(?:\\bvar\\s+${escapeRegExp2(alias)}\\b|\\b${escapeRegExp2(alias)}\\s*:=|(?:^|[,;(])\\s*${escapeRegExp2(alias)}\\s*(?:,|:=|=|\\brange\\b))`,
+    "m"
+  ).test(before);
+}
+function isStringSlice(node, source) {
+  if (node.type !== "composite_literal") return false;
+  const typeNode = node.childForFieldName("type") ?? node.namedChild(0);
+  return typeNode !== null && normalize(sourceText(typeNode, source)) === "[]string";
+}
+function stringValues(node, source) {
+  return descendants(node, "interpreted_string_literal").concat(descendants(node, "raw_string_literal")).map((literal) => stringValue(literal, source));
+}
+function isStringLiteral(node) {
+  return node.type === "interpreted_string_literal" || node.type === "raw_string_literal";
+}
+function stringValue(node, source) {
+  const text = sourceText(node, source);
+  return text.length >= 2 ? text.slice(1, -1).toLowerCase() : text.toLowerCase();
+}
+function unboundedValueKind(argument, source) {
+  if (isStringLiteral(argument)) return void 0;
+  const text = normalize(sourceText(argument, source));
+  if (/\.URL\.(?:Path|String\(\))$/i.test(text)) return "request-url";
+  if (/\buser_?id\b/i.test(text)) return "user-id";
+  if (/\brequest_?id\b/i.test(text)) return "request-id";
+  if (/\berr(?:or)?\.Error\(\)$/i.test(text)) return "error-text";
+  return void 0;
+}
+function owningFunction(node) {
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (["func_literal", "function_declaration", "method_declaration"].includes(current.type)) return current;
+  }
+  return void 0;
+}
+function signatureCounts(items) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const item of items) counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1);
+  return counts;
+}
+function changedAnchor2(file, nodes) {
+  for (const node of nodes) {
+    const start2 = node.startPosition.row + 1;
+    const end = node.endPosition.row + 1;
+    if (file.status === "repository" || file.status === "added") return start2;
+    for (let line = start2; line <= end; line += 1) {
+      if (file.changedLines.has(line)) return line;
+    }
+  }
+  return void 0;
+}
+function normalize(value) {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/lossy-error-classification.ts
 var PARSER_METHOD = /^(?:Parse\w*|Decode\w*|Unmarshal\w*|\w*From(?:Manifest|Blob|JSON|YAML|XML))$/;
 var ERROR_NAME = /^(?:err|\w*(?:Err|Error))$/;
@@ -22373,16 +22625,16 @@ async function lossyErrorClassificationSignals(files) {
     const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
     try {
       if (currentTree.rootNode.hasError || previousTree?.rootNode.hasError === true) continue;
-      const current = candidates(currentTree.rootNode, file.current);
-      const previousCounts = signatureCounts(
-        previousTree === void 0 ? [] : candidates(previousTree.rootNode, file.previous)
+      const current = candidates2(currentTree.rootNode, file.current);
+      const previousCounts = signatureCounts2(
+        previousTree === void 0 ? [] : candidates2(previousTree.rootNode, file.previous)
       );
       const currentCounts = /* @__PURE__ */ new Map();
       for (const item of current) {
         const occurrence = (currentCounts.get(item.signature) ?? 0) + 1;
         currentCounts.set(item.signature, occurrence);
         if (file.status === "modified" && occurrence <= (previousCounts.get(item.signature) ?? 0)) continue;
-        const anchor = changedAnchor2(file, [item.assignment, item.guard, item.returned]);
+        const anchor = changedAnchor3(file, [item.assignment, item.guard, item.returned]);
         if (anchor === void 0) continue;
         signals.push({
           ruleId: "go-obs.logging.lossy-parse-classification",
@@ -22408,12 +22660,12 @@ async function lossyErrorClassificationSignals(files) {
   }
   return signals;
 }
-function signatureCounts(items) {
+function signatureCounts2(items) {
   const result = /* @__PURE__ */ new Map();
   for (const item of items) result.set(item.signature, (result.get(item.signature) ?? 0) + 1);
   return result;
 }
-function candidates(root, source) {
+function candidates2(root, source) {
   const imports = importedAliases(root, source);
   if (imports.context === void 0 || imports.errors === void 0) return [];
   const functions = functionInfos2(root, source, imports.context);
@@ -22488,7 +22740,7 @@ function functionInfos2(root, source, contextAlias) {
     const plain = /^func\s+([A-Za-z_]\w*)\s*\(/.exec(header);
     const name2 = method?.[1] ?? plain?.[1];
     if (name2 === void 0) return [];
-    const contextMatch = new RegExp(`\\b([A-Za-z_]\\w*)\\s+${escapeRegExp2(contextAlias)}\\.Context\\b`).exec(header);
+    const contextMatch = new RegExp(`\\b([A-Za-z_]\\w*)\\s+${escapeRegExp3(contextAlias)}\\.Context\\b`).exec(header);
     return [{ node, body: body2, name: name2, ...contextMatch === null ? {} : { contextName: contextMatch[1] } }];
   });
 }
@@ -22497,7 +22749,7 @@ function packageErrorSentinels(root, source, errorsAlias) {
   for (const declaration of root.namedChildren.filter((node) => node.type === "var_declaration")) {
     for (const spec of declaration.namedChildren.filter((node) => node.type === "var_spec")) {
       const match = new RegExp(
-        `^\\s*([A-Za-z_]\\w*)\\s*=\\s*${escapeRegExp2(errorsAlias)}\\.New\\s*\\(`
+        `^\\s*([A-Za-z_]\\w*)\\s*=\\s*${escapeRegExp3(errorsAlias)}\\.New\\s*\\(`
       ).exec(sourceText(spec, source));
       if (match !== null) result.add(match[1]);
     }
@@ -22575,13 +22827,13 @@ function classificationComment(gap) {
 }
 function bindingDeclaredBefore(fn, name2, before, source) {
   const header = sourceText(fn.node, source).slice(0, fn.body.startIndex - fn.node.startIndex);
-  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp2(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
+  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp3(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
   const prefix = source.slice(fn.body.startIndex, before);
-  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp2(name2)}\\s*(?::=|=)`, "m").test(prefix);
+  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp3(name2)}\\s*(?::=|=)`, "m").test(prefix);
 }
 function localBindingDeclaredBefore(fn, name2, before, source) {
   const prefix = source.slice(fn.body.startIndex, before);
-  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp2(name2)}\\s*(?::=|=)`, "m").test(prefix);
+  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+)?${escapeRegExp3(name2)}\\s*(?::=|=)`, "m").test(prefix);
 }
 function insideNestedFunction2(node, boundary) {
   let parent = node.parent;
@@ -22630,7 +22882,7 @@ function definitelyTerminates(statement, fn, source) {
 }
 function lexicallyDeclaredBefore(fn, name2, use, source) {
   const header = sourceText(fn.node, source).slice(0, fn.body.startIndex - fn.node.startIndex);
-  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp2(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
+  if (new RegExp(`(?:^|[,;(])\\s*${escapeRegExp3(name2)}\\s+(?:\\*?[A-Za-z_]|interface\\b|func\\b)`).test(header)) return true;
   let current = use;
   while (current !== null && current.id !== fn.body.id) {
     const parent = current.parent;
@@ -22657,7 +22909,7 @@ function declaresName(node, name2, source) {
   }
   if (node.type === "range_clause" || node.type === "receive_statement") {
     const declaration = sourceText(node, source).split(":=", 1)[0];
-    return sourceText(node, source).includes(":=") && new RegExp(`(?:^|,)\\s*${escapeRegExp2(name2)}\\s*(?:,|$)`).test(declaration ?? "");
+    return sourceText(node, source).includes(":=") && new RegExp(`(?:^|,)\\s*${escapeRegExp3(name2)}\\s*(?:,|$)`).test(declaration ?? "");
   }
   return false;
 }
@@ -22666,18 +22918,18 @@ function packageDeclaresName2(node, name2, source) {
   while (root.parent !== null) root = root.parent;
   return root.namedChildren.some((child) => {
     if (child.type === "function_declaration") {
-      return new RegExp(`^func\\s+${escapeRegExp2(name2)}\\s*\\(`).test(sourceText(child, source));
+      return new RegExp(`^func\\s+${escapeRegExp3(name2)}\\s*\\(`).test(sourceText(child, source));
     }
     if (child.type === "var_declaration" || child.type === "const_declaration") {
       return declaresName(child, name2, source);
     }
     if (child.type === "type_declaration") {
-      return new RegExp(`^type\\s+${escapeRegExp2(name2)}\\b`).test(sourceText(child, source));
+      return new RegExp(`^type\\s+${escapeRegExp3(name2)}\\b`).test(sourceText(child, source));
     }
     return false;
   });
 }
-function changedAnchor2(file, nodes) {
+function changedAnchor3(file, nodes) {
   if (file.status === "repository" || file.status === "added") return lineOf2(nodes[0]);
   for (const node of nodes) {
     for (let line = lineOf2(node); line <= node.endPosition.row + 1; line += 1) {
@@ -22692,7 +22944,7 @@ function lineOf2(node) {
 function lineText2(source, line) {
   return source.split("\n")[line - 1]?.trim().slice(0, 300) ?? "";
 }
-function escapeRegExp2(value) {
+function escapeRegExp3(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -22711,13 +22963,13 @@ function metricDurationUnitMismatchSignals(files) {
   for (const file of files) {
     const byVariable = /* @__PURE__ */ new Map();
     for (const definition of definitions.get(metricDirectory2(file.path)) ?? []) {
-      const candidates3 = byVariable.get(definition.variable) ?? [];
-      candidates3.push(definition);
-      byVariable.set(definition.variable, candidates3);
+      const candidates4 = byVariable.get(definition.variable) ?? [];
+      candidates4.push(definition);
+      byVariable.set(definition.variable, candidates4);
     }
-    for (const candidates3 of byVariable.values()) {
-      const sameFile = candidates3.filter((definition2) => definition2.path === file.path);
-      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates3.length === 1 ? candidates3[0] : void 0;
+    for (const candidates4 of byVariable.values()) {
+      const sameFile = candidates4.filter((definition2) => definition2.path === file.path);
+      const definition = sameFile.length === 1 ? sameFile[0] : sameFile.length === 0 && candidates4.length === 1 ? candidates4[0] : void 0;
       if (definition === void 0) continue;
       signals.push(...observationMismatches(file, definition));
     }
@@ -22756,7 +23008,7 @@ function declaredDurationUnit(metricName) {
   return null;
 }
 function observationMismatches(file, definition) {
-  const variable = escapeRegExp3(definition.variable);
+  const variable = escapeRegExp4(definition.variable);
   const observe = new RegExp(
     `\\b${variable}(?:\\s*\\.\\s*With(?:LabelValues|Labels)\\s*\\([\\s\\S]{0,500}?\\))?\\s*\\.\\s*Observe\\s*\\(`,
     "g"
@@ -22826,7 +23078,7 @@ function metricDirectory2(path) {
   const separator = path.lastIndexOf("/");
   return separator === -1 ? "" : path.slice(0, separator);
 }
-function escapeRegExp3(value) {
+function escapeRegExp4(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function deduplicate(signals) {
@@ -22854,16 +23106,16 @@ async function successLatencyOnNonSuccessPathSignals(files) {
     const previousTree = file.previous === void 0 ? void 0 : await parseGo(file.previous);
     try {
       if (currentTree.rootNode.hasError || previousTree?.rootNode.hasError === true) continue;
-      const current = candidates2(currentTree.rootNode, file.current, contracts, file.path);
-      const previousCounts = signatureCounts2(
-        previousTree === void 0 ? [] : candidates2(previousTree.rootNode, file.previous, contracts, file.path)
+      const current = candidates3(currentTree.rootNode, file.current, contracts, file.path);
+      const previousCounts = signatureCounts3(
+        previousTree === void 0 ? [] : candidates3(previousTree.rootNode, file.previous, contracts, file.path)
       );
       const currentCounts = /* @__PURE__ */ new Map();
       for (const candidate of current) {
         const occurrence = (currentCounts.get(candidate.signature) ?? 0) + 1;
         currentCounts.set(candidate.signature, occurrence);
         if (file.status === "modified" && occurrence <= (previousCounts.get(candidate.signature) ?? 0)) continue;
-        const anchor = changedAnchor3(file, [
+        const anchor = changedAnchor4(file, [
           candidate.deferNode,
           candidate.metricCall,
           candidate.earlyReturn,
@@ -22906,7 +23158,7 @@ function metricContracts(files) {
       contracts.push({
         identifier,
         operation,
-        text: normalize(text),
+        text: normalize2(text),
         path: file.path,
         directory: directory(file.path),
         packageName
@@ -22915,9 +23167,9 @@ function metricContracts(files) {
   }
   return contracts;
 }
-function candidates2(root, source, contracts, path = "") {
+function candidates3(root, source, contracts, path = "") {
   const result = [];
-  const imports = importAliases(root, source);
+  const imports = importAliases2(root, source);
   const packageName = /^\s*package\s+([A-Za-z_]\w*)\b/m.exec(source)?.[1] ?? "";
   const functions = descendants(root, "function_declaration").concat(descendants(root, "method_declaration"));
   for (const fn of functions) {
@@ -22926,13 +23178,13 @@ function candidates2(root, source, contracts, path = "") {
     if (body2 === null || nameNode === null) continue;
     const functionName = sourceText(nameNode, source);
     for (const deferNode of descendants(body2, "defer_statement")) {
-      if (owningFunction(deferNode)?.id !== fn.id || staticallyDead(deferNode, source)) continue;
+      if (owningFunction2(deferNode)?.id !== fn.id || staticallyDead(deferNode, source)) continue;
       const literal = descendants(deferNode, "func_literal")[0];
       if (literal === void 0) continue;
       const literalBody = literal.childForFieldName("body");
       if (literalBody === null) continue;
       for (const metricCall of descendants(literalBody, "call_expression")) {
-        if (owningFunction(metricCall)?.id !== literal.id) continue;
+        if (owningFunction2(metricCall)?.id !== literal.id) continue;
         const method = selectedMethod2(metricCall, source);
         if (method === void 0 || !DURATION_METHOD.test(method)) continue;
         const callText = sourceText(metricCall, source);
@@ -22948,12 +23200,12 @@ function candidates2(root, source, contracts, path = "") {
         const contract = matchingContracts[0];
         if (successGuarded(metricCall, literalBody, source)) continue;
         if (OUTCOME_DIMENSION.test(sourceText(literalBody, source))) continue;
-        const completionCall = descendants(body2, "call_expression").filter((call) => owningFunction(call)?.id === fn.id && call.startIndex > deferNode.endIndex).find((call) => {
+        const completionCall = descendants(body2, "call_expression").filter((call) => owningFunction2(call)?.id === fn.id && call.startIndex > deferNode.endIndex).find((call) => {
           const selected = selectedMethod2(call, source);
           return selected === contract.operation || selected?.startsWith(contract.operation) === true;
         });
         if (completionCall === void 0) continue;
-        const earlyReturn = descendants(body2, "return_statement").filter((statement) => owningFunction(statement)?.id === fn.id && statement.startIndex > deferNode.endIndex && statement.startIndex < completionCall.startIndex && !staticallyDead(statement, source)).find((statement) => {
+        const earlyReturn = descendants(body2, "return_statement").filter((statement) => owningFunction2(statement)?.id === fn.id && statement.startIndex > deferNode.endIndex && statement.startIndex < completionCall.startIndex && !staticallyDead(statement, source)).find((statement) => {
           const context = stripComments(
             source.slice(Math.max(deferNode.endIndex, statement.startIndex - 600), statement.endIndex)
           );
@@ -22965,8 +23217,8 @@ function candidates2(root, source, contracts, path = "") {
             functionName,
             contract.identifier,
             contract.operation,
-            normalize(sourceText(deferNode, source)),
-            normalize(sourceText(earlyReturn, source)),
+            normalize2(sourceText(deferNode, source)),
+            normalize2(sourceText(earlyReturn, source)),
             selectedMethod2(completionCall, source) ?? ""
           ].join("|"),
           functionName,
@@ -22982,7 +23234,7 @@ function candidates2(root, source, contracts, path = "") {
   }
   return result;
 }
-function signatureCounts2(items) {
+function signatureCounts3(items) {
   const counts = /* @__PURE__ */ new Map();
   for (const item of items) counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1);
   return counts;
@@ -22996,7 +23248,7 @@ function selectedMethod2(call, source) {
   return field === null ? void 0 : sourceText(field, source);
 }
 function contractMatchesCall(contract, callText, imports, packageName, fileDirectory) {
-  const reference = new RegExp(`(?:\\b([A-Za-z_]\\w*)\\s*\\.\\s*)?\\b${escapeRegExp4(contract.identifier)}\\b`).exec(callText);
+  const reference = new RegExp(`(?:\\b([A-Za-z_]\\w*)\\s*\\.\\s*)?\\b${escapeRegExp5(contract.identifier)}\\b`).exec(callText);
   if (reference === null) return false;
   const qualifier = reference[1];
   if (qualifier === void 0) {
@@ -23006,7 +23258,7 @@ function contractMatchesCall(contract, callText, imports, packageName, fileDirec
   if (importedPath === void 0) return false;
   return importedPath === contract.directory || importedPath.endsWith(`/${contract.directory}`);
 }
-function importAliases(root, source) {
+function importAliases2(root, source) {
   const result = /* @__PURE__ */ new Map();
   for (const spec of descendants(root, "import_spec")) {
     const match = /^(?:([A-Za-z_]\w*|[_.])\s+)?["`]([^"`]+)["`]$/.exec(sourceText(spec, source).trim());
@@ -23022,14 +23274,14 @@ function successGuarded(call, deferredBody, source) {
     if (node.type !== "if_statement") continue;
     const condition = node.childForFieldName("condition");
     if (condition === null) continue;
-    const text = normalize(sourceText(condition, source));
+    const text = normalize2(sourceText(condition, source));
     if (/\b(?:success|succeeded|completed)\b/i.test(text)) return true;
     if (/\b(?:err|error)\s*==\s*nil\b|\bnil\s*==\s*(?:err|error)\b/.test(text)) return true;
     if (/\bresult\s*!=\s*nil\b|\bnil\s*!=\s*result\b/.test(text)) return true;
   }
   return false;
 }
-function owningFunction(node) {
+function owningFunction2(node) {
   for (let current = node.parent; current !== null; current = current.parent) {
     if (current.type === "func_literal" || current.type === "function_declaration" || current.type === "method_declaration") {
       return current;
@@ -23044,7 +23296,7 @@ function staticallyDead(node, source) {
     const alternative = current.childForFieldName("alternative");
     const condition = current.childForFieldName("condition");
     if (condition === null) continue;
-    const value = normalize(sourceText(condition, source)).replace(/^\((.*)\)$/s, "$1");
+    const value = normalize2(sourceText(condition, source)).replace(/^\((.*)\)$/s, "$1");
     if (value === "false" && consequence !== null && contains(consequence, node)) return true;
     if (value === "true" && alternative !== null && contains(alternative, node)) return true;
   }
@@ -23053,7 +23305,7 @@ function staticallyDead(node, source) {
 function contains(parent, child) {
   return parent.startIndex <= child.startIndex && child.endIndex <= parent.endIndex;
 }
-function changedAnchor3(file, nodes) {
+function changedAnchor4(file, nodes) {
   for (const node of nodes) {
     const start2 = node.startPosition.row + 1;
     const end = node.endPosition.row + 1;
@@ -23067,13 +23319,13 @@ function changedAnchor3(file, nodes) {
 function lineText3(source, line) {
   return source.split("\n")[line - 1]?.trim().slice(0, 300) ?? "";
 }
-function normalize(text) {
+function normalize2(text) {
   return stripComments(text).replace(/\s+/g, "");
 }
 function stripComments(text) {
   return text.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, " ");
 }
-function escapeRegExp4(value) {
+function escapeRegExp5(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function directory(path) {
@@ -23108,6 +23360,7 @@ async function analyzeDiscovery(discovery) {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await highCardinalitySignals(discovery.files));
   signals.push(...failureCounterWithoutDenominatorSignals(discovery.files).filter((item) => {
     const file = fileByPath.get(item.path);
     return file !== void 0 && changed(file, item.line, item.endLine);
@@ -23352,7 +23605,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.12",
+    version: "0.0.13",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {

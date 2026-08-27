@@ -1,6 +1,7 @@
 import { domain } from "./domain.js";
 import { cancellationEscalationSignals } from "./cancellation-logging.js";
 import { failureCounterWithoutDenominatorSignals } from "./failure-rates.js";
+import { highCardinalitySignals } from "./high-cardinality.js";
 import { lossyErrorClassificationSignals } from "./lossy-error-classification.js";
 import { metricDurationUnitMismatchSignals } from "./metric-units.js";
 import { parseGo } from "./parser.js";
@@ -35,6 +36,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     const file = fileByPath.get(item.path);
     return file !== undefined && changed(file, item.line, item.endLine);
   }));
+  signals.push(...await highCardinalitySignals(discovery.files));
   signals.push(...failureCounterWithoutDenominatorSignals(discovery.files).filter((item) => {
     const file = fileByPath.get(item.path);
     return file !== undefined && changed(file, item.line, item.endLine);

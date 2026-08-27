@@ -1,1 +1,1 @@
-{"risk":"high","findings":[{"ruleId":"go-obs.metrics.high-cardinality","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
+{"risk":"high","findings":[{"ruleId":"go-obs.metrics.high-cardinality","severity":"high","evidenceCount":2}],"positiveKeys":[],"ship":false}
