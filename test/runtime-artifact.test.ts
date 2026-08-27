@@ -28,9 +28,28 @@ func (w *worker) handle(ctx context.Context, d delivery) error {
 }
 `;
 
+const lossyClassificationFixture = `package sample
+import (
+  "context"
+  "errors"
+  "example.com/project/internal/log"
+  "example.com/parser/manifest"
+)
+var ErrIsAnImage = errors.New("reference is an image")
+func pull(ctx context.Context) { log.Infof(ctx, "pulling") }
+func ensure(ctx context.Context, source []byte) error {
+  parsed, err := manifest.ParseManifest(source)
+  // Unable to parse the artifact manifest, assume an image.
+  if err != nil { return ErrIsAnImage }
+  _ = parsed
+  return nil
+}
+`;
+
 test("the published runtime executes without node_modules", async () => {
   const artifact = await mkdtemp(join(tmpdir(), "go-observability-artifact-"));
   const repository = await mkdtemp(join(tmpdir(), "go-observability-target-"));
+  const lossyOnlyRepository = await mkdtemp(join(tmpdir(), "go-observability-lossy-target-"));
   const entrypoint = join(artifact, "dist", "index.js");
   const input = join(artifact, "input.json");
   const output = join(artifact, "output.json");
@@ -47,6 +66,8 @@ test("the published runtime executes without node_modules", async () => {
   await copyFile(join(projectRoot, "THIRD_PARTY_NOTICES.md"), join(artifact, "THIRD_PARTY_NOTICES.md"));
   await writeFile(join(artifact, "package.json"), '{"type":"module"}\n');
   await writeFile(join(repository, "main.go"), cancellationFixture);
+  await writeFile(join(repository, "classification.go"), lossyClassificationFixture);
+  await writeFile(join(lossyOnlyRepository, "classification.go"), lossyClassificationFixture);
   await writeFile(input, `${JSON.stringify({ source: { path: repository } })}\n`);
 
   const bundle = await readFile(entrypoint, "utf8");
@@ -79,8 +100,28 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/observability");
-  assert.equal(envelope.result.adversary.version, "0.0.9");
+  assert.equal(envelope.result.adversary.version, "0.0.11");
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-obs.logging.normal-cancellation-as-error",
+    "go-obs.logging.lossy-parse-classification",
   ]);
+
+  const lossyInput = join(artifact, "lossy-input.json");
+  const lossyOutput = join(artifact, "lossy-output.json");
+  await writeFile(lossyInput, `${JSON.stringify({ source: { path: lossyOnlyRepository } })}\n`);
+  await execute(process.execPath, [entrypoint], {
+    cwd: artifact,
+    env: {
+      ...process.env,
+      ADVERSARY_INPUT: lossyInput,
+      ADVERSARY_OUTPUT: lossyOutput,
+      ADVERSARY_REPO: lossyOnlyRepository,
+    },
+  });
+  const lossyEnvelope = JSON.parse(await readFile(lossyOutput, "utf8"));
+  assert.deepEqual(lossyEnvelope.result.findings.map((finding: { ruleId: string; severity: string }) => ({
+    ruleId: finding.ruleId,
+    severity: finding.severity,
+  })), [{ ruleId: "go-obs.logging.lossy-parse-classification", severity: "low" }]);
+  assert.equal(lossyEnvelope.result.opinion.ship, true);
 });

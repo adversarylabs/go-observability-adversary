@@ -10,6 +10,21 @@ export const domain: DomainDefinition = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.logging.lossy-parse-classification",
+      title: "A parser failure is collapsed into a sentinel without diagnostics",
+      category: "observability",
+      severity: "low",
+      confidence: "high",
+      summary: (count) =>
+        `${count} changed parser failure path${count === 1 ? " discards" : "s discard"} the original cause while returning a classification sentinel.`,
+      whyItMatters:
+        "A deliberate fallback can share one parser error path with malformed or otherwise unexpected input; collapsing both into a sentinel removes the only evidence that distinguishes them.",
+      impact:
+        "Operators can see the fallback classification but cannot diagnose why parsing failed or distinguish expected alternate formats from corrupted input.",
+      recommendation:
+        "Log the original parser error at debug level immediately before returning the sentinel, or retain the cause in the returned error when the caller contract allows it.",
+    },
+    {
       id: "go-obs.logging.normal-cancellation-as-error",
       title: "Normal cancellation is re-logged as an error",
       category: "observability",
