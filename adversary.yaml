@@ -1,4 +1,4 @@
-name: go/observability
+name: adversarylabs/go/observability
 version: 0.0.13
 description: "Reviews Go logs, traces, metrics, context propagation, and telemetry lifecycle defects."
 
