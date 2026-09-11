@@ -10,6 +10,17 @@ export const domain: DomainDefinition = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.metrics.planned-batch-as-executed",
+      title: "A completion counter records planned work after a batch failure",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} completion counter emission${count === 1 ? " counts" : "s count"} the entire input batch despite a reachable work failure.`,
+      whyItMatters: "A selected batch is not evidence that every item completed successfully.",
+      impact: "Completion metrics overstate successful work when a failed item stops or skips execution.",
+      recommendation: "Increment after each successful operation or record the actual completed count; keep planned, attempted, and successful metrics separate according to their contracts.",
+    },
+    {
       id: "go-obs.logging.lossy-parse-classification",
       title: "A parser failure is collapsed into a sentinel without diagnostics",
       category: "observability",

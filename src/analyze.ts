@@ -7,6 +7,7 @@ import { metricDurationUnitMismatchSignals } from "./metric-units.js";
 import { parseGo } from "./parser.js";
 import { successLatencyOnNonSuccessPathSignals } from "./success-latency.js";
 import { type Analysis, type Discovery, type PositiveSignal, type Signal, type SourceRevision } from "./types.js";
+import { batchExecutionCountSignals } from "./batch-execution-count.js";
 
 export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> {
   const signals: Signal[] = [];
@@ -44,6 +45,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
   signals.push(...await successLatencyOnNonSuccessPathSignals(discovery.files));
   signals.push(...await cancellationEscalationSignals(discovery.files));
   signals.push(...await lossyErrorClassificationSignals(discovery.files));
+  signals.push(...await batchExecutionCountSignals(discovery.files));
 
   return {
     mode: discovery.mode,
