@@ -75,7 +75,7 @@ function batchCountCandidates(root: Node) {
       if (args?.length !== 1 || args[0]?.type !== "composite_literal" ||
           args[0].childForFieldName("type")?.text !== `${alias}.CounterOpts`) continue;
       const help = descendants(args[0], "keyed_element").find((n) => n.namedChildren[0]?.text === "Help")?.namedChildren[1];
-      if (!help || !/^"[^"\\]*\b(?:completed|successful|successfully processed)\b[^"\\]*"$/i.test(help.text) ||
+      if (!help || !/^"[^"\\]*\b(?:successful|successfully (?:completed|processed))\b[^"\\]*"$/i.test(help.text) ||
           /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) continue;
       const metric = name.text;
       // Reject writes, local shadowing, or passing the counter to opaque code.

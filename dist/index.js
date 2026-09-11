@@ -23417,7 +23417,7 @@ function batchCountCandidates(root) {
       const args2 = call.childForFieldName("arguments")?.namedChildren;
       if (args2?.length !== 1 || args2[0]?.type !== "composite_literal" || args2[0].childForFieldName("type")?.text !== `${alias}.CounterOpts`) continue;
       const help = descendants(args2[0], "keyed_element").find((n) => n.namedChildren[0]?.text === "Help")?.namedChildren[1];
-      if (!help || !/^"[^"\\]*\b(?:completed|successful|successfully processed)\b[^"\\]*"$/i.test(help.text) || /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) continue;
+      if (!help || !/^"[^"\\]*\b(?:successful|successfully (?:completed|processed))\b[^"\\]*"$/i.test(help.text) || /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) continue;
       const metric = name2.text;
       const identifiers = descendants(root, "identifier").filter((n) => n.text === metric && n.id !== name2.id);
       if (identifiers.some((n) => n.parent?.type !== "selector_expression" || n.parent.childForFieldName("operand")?.id !== n.id)) continue;

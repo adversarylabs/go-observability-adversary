@@ -6,7 +6,7 @@ import type { SourceRevision } from "../src/types.ts";
 const code = `package worker
 import "github.com/prometheus/client_golang/prometheus"
 var done = prometheus.NewCounter(prometheus.CounterOpts{
-  Name: "jobs_completed_total", Help: "Number of completed jobs.",
+  Name: "jobs_completed_total", Help: "Number of successful jobs.",
 })
 func run(items []Job) {
   for _, item := range items {
@@ -31,13 +31,14 @@ test("counts the full batch after failure can stop or skip completed work", asyn
 
 test("clean counting contracts and guarded/actual completion stay quiet", async () => {
   for (const clean of [
-    code.replace("Number of completed jobs.", "Number of planned jobs."),
-    code.replace("Number of completed jobs.", "Number of attempted jobs, including failures."),
+    code.replace("Number of successful jobs.", "Number of completed jobs."),
+    code.replace("Number of successful jobs.", "Number of planned jobs."),
+    code.replace("Number of successful jobs.", "Number of attempted jobs, including failures."),
     code.replace("{ break }", "{ return }"),
     code.replace("{ break }", "{ return }").replace("  done.Add(float64(len(items)))", "  done.Add(float64(completed))"),
     code.replace("  done.Add(float64(len(items)))", "  if successful { done.Add(float64(len(items))) }"),
     code.replace("if err := process(item); err != nil { break }", "if err := process(item); err != nil { continue }; done.Inc()").replace("  done.Add(float64(len(items)))", ""),
-    code.replace("Number of completed jobs.", "Number of jobs not completed."),
+    code.replace("Number of successful jobs.", "Number of jobs not completed."),
   ]) assert.deepEqual(await batchExecutionCountSignals([source(clean)]), []);
 });
 
