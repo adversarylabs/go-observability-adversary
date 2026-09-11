@@ -21865,7 +21865,7 @@ function localBindingShadowsAtUse(fn, name2, use, source) {
     ...descendants(fn.body, "var_spec"),
     ...descendants(fn.body, "const_spec")
   ];
-  return declarations.some((declaration) => declaration.startIndex < use.startIndex && !insideNestedFunction(declaration, fn.body) && declarationNames(declaration, source).has(name2) && declarationScopeContainsUse(declaration, use));
+  return declarations.some((declaration2) => declaration2.startIndex < use.startIndex && !insideNestedFunction(declaration2, fn.body) && declarationNames(declaration2, source).has(name2) && declarationScopeContainsUse(declaration2, use));
 }
 function declarationNames(node, source) {
   let candidate = node;
@@ -21875,10 +21875,10 @@ function declarationNames(node, source) {
   const text = sourceText(candidate, source).split(/:=|=|\s+(?=[A-Za-z_*\[])/, 1)[0] ?? "";
   return new Set(text.split(",").map((part) => part.trim()).filter((part) => /^[A-Za-z_]\w*$/.test(part)));
 }
-function declarationScopeContainsUse(declaration, use) {
-  const block = enclosingBlock(declaration);
+function declarationScopeContainsUse(declaration2, use) {
+  const block = enclosingBlock(declaration2);
   if (block === null) return false;
-  let current = declaration.parent;
+  let current = declaration2.parent;
   while (current !== null && current.id !== block.id) {
     if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
       return containsNode(current, use);
@@ -21927,22 +21927,22 @@ function bindingShadowsName(fn, name2, use, source) {
   return localBindingShadowsAtUse(fn, name2, use, source);
 }
 function locallyShadowsParameter(fn, name2, use, source) {
-  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
-    if (declaration.endIndex >= use.startIndex) continue;
-    const left = declaration.childForFieldName("left");
-    const scope = enclosingBlock(declaration);
-    if (left !== null && directlyAssignsIdentifier(left, name2, source) && scope !== null && (scope.id !== fn.body.id && containsNode(scope, use) || controlInitializerScopesUse(declaration, use, scope))) return true;
+  for (const declaration2 of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration2.endIndex >= use.startIndex) continue;
+    const left = declaration2.childForFieldName("left");
+    const scope = enclosingBlock(declaration2);
+    if (left !== null && directlyAssignsIdentifier(left, name2, source) && scope !== null && (scope.id !== fn.body.id && containsNode(scope, use) || controlInitializerScopesUse(declaration2, use, scope))) return true;
   }
-  for (const declaration of scopedDescendants(fn, "var_declaration")) {
-    if (declaration.endIndex >= use.startIndex) continue;
-    const scope = enclosingBlock(declaration);
+  for (const declaration2 of scopedDescendants(fn, "var_declaration")) {
+    if (declaration2.endIndex >= use.startIndex) continue;
+    const scope = enclosingBlock(declaration2);
     if (scope === null || scope.id === fn.body.id || !containsNode(scope, use)) continue;
-    if (new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) return true;
+    if (new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration2, source))) return true;
   }
   return false;
 }
-function controlInitializerScopesUse(declaration, use, enclosing) {
-  let current = declaration.parent;
+function controlInitializerScopesUse(declaration2, use, enclosing) {
+  let current = declaration2.parent;
   while (current !== null && current.id !== enclosing.id) {
     if (["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement"].includes(current.type)) {
       return containsNode(current, use);
@@ -21954,16 +21954,16 @@ function controlInitializerScopesUse(declaration, use, enclosing) {
 function packageDeclaresName(fn, name2, source) {
   let root = fn.node;
   while (root.parent !== null) root = root.parent;
-  return root.namedChildren.some((declaration) => {
-    if (declaration.type === "function_declaration") {
-      const declared = declaration.childForFieldName("name");
+  return root.namedChildren.some((declaration2) => {
+    if (declaration2.type === "function_declaration") {
+      const declared = declaration2.childForFieldName("name");
       return declared !== null && sourceText(declared, source) === name2;
     }
-    if (declaration.type === "type_declaration") {
-      return descendants(declaration, "type_spec").some((spec) => sourceText(spec, source).trimStart().startsWith(`${name2} `));
+    if (declaration2.type === "type_declaration") {
+      return descendants(declaration2, "type_spec").some((spec) => sourceText(spec, source).trimStart().startsWith(`${name2} `));
     }
-    if (declaration.type !== "var_declaration" && declaration.type !== "const_declaration") return false;
-    return new RegExp(`^(?:var|const)\\s+(?:${escapeRegExp(name2)}\\b|\\([\\s\\S]*?^\\s*${escapeRegExp(name2)}\\b)`, "m").test(sourceText(declaration, source));
+    if (declaration2.type !== "var_declaration" && declaration2.type !== "const_declaration") return false;
+    return new RegExp(`^(?:var|const)\\s+(?:${escapeRegExp(name2)}\\b|\\([\\s\\S]*?^\\s*${escapeRegExp(name2)}\\b)`, "m").test(sourceText(declaration2, source));
   });
 }
 function selectedMethod(call, source) {
@@ -21996,17 +21996,17 @@ function bindingChangesBeforeUse(fn, name2, startIndex, use, source) {
     const left = assignment.childForFieldName("left");
     if (left !== null && directlyAssignsIdentifier(left, name2, source)) return true;
   }
-  for (const declaration of scopedDescendants(fn, "short_var_declaration")) {
-    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
-    const left = declaration.childForFieldName("left");
+  for (const declaration2 of scopedDescendants(fn, "short_var_declaration")) {
+    if (declaration2.startIndex <= startIndex || declaration2.endIndex >= use.startIndex) continue;
+    const left = declaration2.childForFieldName("left");
     if (left === null || !directlyAssignsIdentifier(left, name2, source)) continue;
-    const scope = enclosingBlock(declaration);
+    const scope = enclosingBlock(declaration2);
     if (scope !== null && containsNode(scope, use)) return true;
   }
-  for (const declaration of scopedDescendants(fn, "var_declaration")) {
-    if (declaration.startIndex <= startIndex || declaration.endIndex >= use.startIndex) continue;
-    if (!new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration, source))) continue;
-    const scope = enclosingBlock(declaration);
+  for (const declaration2 of scopedDescendants(fn, "var_declaration")) {
+    if (declaration2.startIndex <= startIndex || declaration2.endIndex >= use.startIndex) continue;
+    if (!new RegExp(`^\\s*var\\s+(?:\\([^)]*\\b)?${escapeRegExp(name2)}\\b`, "s").test(sourceText(declaration2, source))) continue;
+    const scope = enclosingBlock(declaration2);
     if (scope !== null && containsNode(scope, use)) return true;
   }
   return false;
@@ -22037,23 +22037,23 @@ function definitelyInvokedStoredMutation(mutation, fn, name2, use, source) {
   if (new RegExp(`[(,]\\s*${escapeRegExp(name2)}\\s+`).test(header)) return false;
   const prefix = source.slice(body2.startIndex, mutation.startIndex);
   if (new RegExp(`(?:\\bvar\\s+${escapeRegExp(name2)}\\b|\\b${escapeRegExp(name2)}\\s*:=)`).test(prefix)) return false;
-  let declaration = literal.parent;
-  while (declaration !== null && declaration.type !== "short_var_declaration") {
-    if (["statement_list", "block"].includes(declaration.type)) return false;
-    declaration = declaration.parent;
+  let declaration2 = literal.parent;
+  while (declaration2 !== null && declaration2.type !== "short_var_declaration") {
+    if (["statement_list", "block"].includes(declaration2.type)) return false;
+    declaration2 = declaration2.parent;
   }
-  if (declaration === null || declaration.endIndex >= use.startIndex) return false;
-  const left = declaration.childForFieldName("left");
+  if (declaration2 === null || declaration2.endIndex >= use.startIndex) return false;
+  const left = declaration2.childForFieldName("left");
   const closureIdentifier = left?.type === "identifier" ? left : left?.type === "expression_list" && left.namedChildren.length === 1 && left.namedChildren[0]?.type === "identifier" ? left.namedChildren[0] : void 0;
   const closureName = closureIdentifier === void 0 ? void 0 : sourceText(closureIdentifier, source);
-  const scope = enclosingBlock(declaration);
+  const scope = enclosingBlock(declaration2);
   if (closureName === void 0 || scope === null || !containsNode(scope, use)) return false;
   for (const invocation of descendants(scope, "call_expression")) {
-    if (invocation.startIndex <= declaration.endIndex || invocation.endIndex >= use.startIndex || insideNestedFunction(invocation, scope) || calledName(invocation, source) !== closureName) continue;
+    if (invocation.startIndex <= declaration2.endIndex || invocation.endIndex >= use.startIndex || insideNestedFunction(invocation, scope) || calledName(invocation, source) !== closureName) continue;
     const statement = invocation.parent;
     if (statement?.type !== "expression_statement" || !isDirectInBlock(invocation, scope) || !directStatementIsReachable(invocation, scope, fn, source)) continue;
     const reassigned = descendants(scope, "assignment_statement").some((assignment) => {
-      if (assignment.startIndex <= declaration.endIndex || assignment.endIndex >= invocation.startIndex || insideNestedFunction(assignment, scope)) return false;
+      if (assignment.startIndex <= declaration2.endIndex || assignment.endIndex >= invocation.startIndex || insideNestedFunction(assignment, scope)) return false;
       const assigned = assignment.childForFieldName("left");
       return assigned !== null && directlyAssignsIdentifier(assigned, closureName, source);
     });
@@ -22492,23 +22492,23 @@ function stringSliceDefinitions(root, source) {
   const result = [];
   for (const literal of descendants(root, "composite_literal")) {
     if (!isStringSlice(literal, source)) continue;
-    let declaration = literal.parent;
-    while (declaration !== null && !["short_var_declaration", "assignment_statement", "var_spec"].includes(declaration.type)) {
-      if (declaration.type === "call_expression" || owningFunction(declaration)?.id !== owningFunction(literal)?.id) {
-        declaration = null;
+    let declaration2 = literal.parent;
+    while (declaration2 !== null && !["short_var_declaration", "assignment_statement", "var_spec"].includes(declaration2.type)) {
+      if (declaration2.type === "call_expression" || owningFunction(declaration2)?.id !== owningFunction(literal)?.id) {
+        declaration2 = null;
         break;
       }
-      declaration = declaration.parent;
+      declaration2 = declaration2.parent;
     }
-    if (declaration === null) continue;
-    const match = /^(?:var\s+)?([A-Za-z_]\w*)\s*(?::=|=)/s.exec(sourceText(declaration, source).trim());
+    if (declaration2 === null) continue;
+    const match = /^(?:var\s+)?([A-Za-z_]\w*)\s*(?::=|=)/s.exec(sourceText(declaration2, source).trim());
     if (match === null) continue;
-    const owner = owningFunction(declaration);
+    const owner = owningFunction(declaration2);
     result.push({
       name: match[1],
       labels: stringValues(literal, source),
       literal,
-      declaration,
+      declaration: declaration2,
       ...owner === void 0 ? {} : { owner }
     });
   }
@@ -22530,9 +22530,9 @@ function bindingReassigned(definition, call, source) {
   });
 }
 function bindingDeclaredBetween(owner, name2, start2, end, source) {
-  return descendants(owner, "short_var_declaration").some((declaration) => {
-    if (declaration.startIndex <= start2 || declaration.endIndex >= end) return false;
-    const left = declaration.childForFieldName("left") ?? declaration.namedChild(0);
+  return descendants(owner, "short_var_declaration").some((declaration2) => {
+    if (declaration2.startIndex <= start2 || declaration2.endIndex >= end) return false;
+    const left = declaration2.childForFieldName("left") ?? declaration2.namedChild(0);
     return left !== null && sourceText(left, source).split(",").map((item) => item.trim()).includes(name2);
   });
 }
@@ -22757,8 +22757,8 @@ function functionInfos2(root, source, contextAlias) {
 }
 function packageErrorSentinels(root, source, errorsAlias) {
   const result = /* @__PURE__ */ new Set();
-  for (const declaration of root.namedChildren.filter((node) => node.type === "var_declaration")) {
-    for (const spec of declaration.namedChildren.filter((node) => node.type === "var_spec")) {
+  for (const declaration2 of root.namedChildren.filter((node) => node.type === "var_declaration")) {
+    for (const spec of declaration2.namedChildren.filter((node) => node.type === "var_spec")) {
       const match = new RegExp(
         `^\\s*([A-Za-z_]\\w*)\\s*=\\s*${escapeRegExp3(errorsAlias)}\\.New\\s*\\(`
       ).exec(sourceText(spec, source));
@@ -22919,8 +22919,8 @@ function declaresName(node, name2, source) {
     return node.namedChildren.some((spec) => spec.namedChildren.some((child) => child.type === "identifier" && sourceText(child, source) === name2));
   }
   if (node.type === "range_clause" || node.type === "receive_statement") {
-    const declaration = sourceText(node, source).split(":=", 1)[0];
-    return sourceText(node, source).includes(":=") && new RegExp(`(?:^|,)\\s*${escapeRegExp3(name2)}\\s*(?:,|$)`).test(declaration ?? "");
+    const declaration2 = sourceText(node, source).split(":=", 1)[0];
+    return sourceText(node, source).includes(":=") && new RegExp(`(?:^|,)\\s*${escapeRegExp3(name2)}\\s*(?:,|$)`).test(declaration2 ?? "");
   }
   return false;
 }
@@ -23350,36 +23350,47 @@ async function batchExecutionCountSignals(files) {
   const result = [];
   for (const file of files) {
     if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
-    const tree = await parseGo(file.current);
-    const previous = file.previous === void 0 ? void 0 : await parseGo(file.previous);
-    try {
-      if (tree.rootNode.hasError) continue;
-      const old = previous && !previous.rootNode.hasError ? batchCountCandidates(previous.rootNode) : [];
-      for (const candidate of batchCountCandidates(tree.rootNode)) {
-        if (file.status === "modified" && (previous === void 0 || previous.rootNode.hasError || old.some((x) => x.signature === candidate.signature))) continue;
-        const anchor = candidate.nodes.find((node) => file.status !== "modified" || Array.from({ length: node.endPosition.row - node.startPosition.row + 1 }, (_, i2) => node.startPosition.row + i2 + 1).some((line) => file.changedLines.has(line)));
-        if (!anchor) continue;
-        result.push({
-          ruleId: RULE,
-          path: file.path,
-          line: anchor.startPosition.row + 1,
-          message: `${candidate.metric} counts completed work, but records the full ${candidate.batch} length after a work error can ${candidate.exit} the batch loop.`,
-          snippet: anchor.text.slice(0, 300),
-          data: {
-            metric: candidate.metric,
-            batch: candidate.batch,
-            earlyExit: candidate.exit,
-            emissionLine: candidate.nodes[0].startPosition.row + 1,
-            scope: "same-file-direct-batch-counter"
-          }
-        });
-      }
-    } finally {
-      previous?.delete();
-      tree.delete();
-    }
+    result.push(...await batchFileSignals(file));
   }
   return result;
+}
+async function batchFileSignals(file) {
+  const tree = await parseGo(file.current);
+  const previous = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+  try {
+    if (tree.rootNode.hasError) return [];
+    if (file.status === "modified" && (!previous || previous.rootNode.hasError)) return [];
+    const old = previous ? batchCountCandidates(previous.rootNode) : [];
+    return batchCountCandidates(tree.rootNode).flatMap((candidate) => {
+      if (file.status === "modified" && old.some((x) => x.signature === candidate.signature)) return [];
+      const anchor = candidate.nodes.find((node) => touchesChange(file, node));
+      if (!anchor) return [];
+      return [{
+        ruleId: RULE,
+        path: file.path,
+        line: anchor.startPosition.row + 1,
+        message: `${candidate.metric} counts successful work, but records the full ${candidate.batch} length after a work error can ${candidate.exit} the batch loop.`,
+        snippet: anchor.text.slice(0, 300),
+        data: {
+          metric: candidate.metric,
+          batch: candidate.batch,
+          earlyExit: candidate.exit,
+          emissionLine: candidate.nodes[0].startPosition.row + 1,
+          scope: "same-file-direct-batch-counter"
+        }
+      }];
+    });
+  } finally {
+    previous?.delete();
+    tree.delete();
+  }
+}
+function touchesChange(file, node) {
+  if (file.status !== "modified") return true;
+  for (let line = node.startPosition.row + 1; line <= node.endPosition.row + 1; line++) {
+    if (file.changedLines.has(line)) return true;
+  }
+  return false;
 }
 function batchCountSignature(node) {
   if (node.type === "comment") return "";
@@ -23388,90 +23399,118 @@ function batchCountSignature(node) {
 function batchStatements(block) {
   return block?.namedChildren.flatMap((n) => n.type === "statement_list" ? n.namedChildren : [n]).filter((n) => n.type !== "comment") ?? [];
 }
-function batchDeclares(root, name2) {
+function containsNode2(scope, node) {
+  return scope.startIndex <= node.startIndex && scope.endIndex >= node.endIndex;
+}
+function bindingScope(node) {
+  let parent = node.parent;
+  while (parent) {
+    if (["block", "if_statement", "for_statement", "expression_switch_statement", "type_switch_statement", "function_declaration", "func_literal", "source_file"].includes(parent.type)) return parent;
+    parent = parent.parent;
+  }
+  return void 0;
+}
+function declaration(node) {
+  const parent = node.parent;
+  if (parent?.type === "expression_list") {
+    const assignment = parent.parent;
+    return assignment?.type === "short_var_declaration" && assignment.childForFieldName("left")?.id === parent.id ? assignment : void 0;
+  }
+  return ["parameter_declaration", "var_spec", "const_spec", "type_spec", "function_declaration"].includes(parent?.type ?? "") && parent?.childForFieldName("name")?.id === node.id ? parent : void 0;
+}
+function batchShadowed(root, name2, use) {
   return descendants(root, "identifier").some((node) => {
     if (node.text !== name2) return false;
-    let parent = node.parent;
-    if (parent?.type === "expression_list") {
-      const assignment = parent.parent;
-      return assignment?.type === "short_var_declaration" && assignment.childForFieldName("left")?.id === parent.id;
-    }
-    return ["parameter_declaration", "var_spec", "const_spec", "type_spec", "function_declaration"].includes(parent?.type ?? "") && parent?.childForFieldName("name")?.id === node.id;
+    const decl = declaration(node);
+    if (!decl) return false;
+    const scope = bindingScope(decl);
+    if (!scope || !containsNode2(scope, use)) return false;
+    return scope.type === "source_file" || decl.type === "parameter_declaration" || decl.endIndex <= use.startIndex;
   });
 }
-function batchCountCandidates(root) {
-  const matches = [];
-  const imports = descendants(root, "import_spec").flatMap((n) => {
+function metricContract(spec, root, aliases) {
+  const name2 = spec.childForFieldName("name");
+  const call = spec.childForFieldName("value")?.namedChildren[0];
+  if (!name2 || name2.type !== "identifier" || call?.type !== "call_expression") return void 0;
+  const alias = aliases.find((a) => call.childForFieldName("function")?.text === `${a}.NewCounter`);
+  if (!alias || batchShadowed(root, alias, call)) return void 0;
+  const args2 = call.childForFieldName("arguments")?.namedChildren;
+  if (args2?.length !== 1 || args2[0]?.type !== "composite_literal" || args2[0].childForFieldName("type")?.text !== `${alias}.CounterOpts`) return void 0;
+  const help = descendants(args2[0], "keyed_element").find((n) => n.namedChildren[0]?.text === "Help")?.namedChildren[1];
+  if (!help || !/^"[^"\\]*\b(?:successful|successfully (?:completed|processed))\b[^"\\]*"$/i.test(help.text) || /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) return void 0;
+  const metric = name2.text;
+  const uses = descendants(root, "identifier").filter((n) => n.text === metric && n.id !== name2.id && !declaration(n));
+  if (uses.some((n) => !batchShadowedLocally(root, metric, n) && (n.parent?.type !== "selector_expression" || n.parent.childForFieldName("operand")?.id !== n.id))) return void 0;
+  return { metric, help };
+}
+function batchShadowedLocally(root, name2, use) {
+  const fn = root.namedChildren.find((n) => n.type === "function_declaration" && containsNode2(n, use));
+  return fn !== void 0 && batchShadowed(fn, name2, use);
+}
+function metricContracts2(root) {
+  const aliases = descendants(root, "import_spec").flatMap((n) => {
     const m = /^(?:(\w+)\s+)?"github.com\/prometheus\/client_golang\/prometheus"$/.exec(n.text);
     return m ? [m[1] ?? "prometheus"] : [];
   });
-  for (const decl of root.namedChildren.filter((n) => n.type === "var_declaration")) {
-    for (const spec of descendants(decl, "var_spec")) {
-      const name2 = spec.childForFieldName("name");
-      const value = spec.childForFieldName("value");
-      const call = value?.namedChildren[0];
-      if (!name2 || name2.type !== "identifier" || !call || call.type !== "call_expression") continue;
-      const callee = call.childForFieldName("function")?.text;
-      const alias = imports.find((a) => callee === `${a}.NewCounter`);
-      if (!alias) continue;
-      const args2 = call.childForFieldName("arguments")?.namedChildren;
-      if (args2?.length !== 1 || args2[0]?.type !== "composite_literal" || args2[0].childForFieldName("type")?.text !== `${alias}.CounterOpts`) continue;
-      const help = descendants(args2[0], "keyed_element").find((n) => n.namedChildren[0]?.text === "Help")?.namedChildren[1];
-      if (!help || !/^"[^"\\]*\b(?:successful|successfully (?:completed|processed))\b[^"\\]*"$/i.test(help.text) || /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) continue;
-      const metric = name2.text;
-      const identifiers = descendants(root, "identifier").filter((n) => n.text === metric && n.id !== name2.id);
-      if (identifiers.some((n) => n.parent?.type !== "selector_expression" || n.parent.childForFieldName("operand")?.id !== n.id)) continue;
-      for (const fn of root.namedChildren.filter((n) => n.type === "function_declaration")) {
-        const body2 = fn.childForFieldName("body");
-        const ss = batchStatements(body2);
-        for (let index = 0; index < ss.length - 1; index++) {
-          const loop = ss[index];
-          const emission = ss[index + 1];
-          if (loop.type !== "for_statement" || emission.type !== "expression_statement") continue;
-          const range = loop.namedChildren.find((n) => n.type === "range_clause");
-          const batchNode = range?.childForFieldName("right");
-          const lhs = range?.childForFieldName("left");
-          if (!batchNode || batchNode.type !== "identifier" || !lhs) continue;
-          const batch = batchNode.text;
-          const parameter = descendants(fn.childForFieldName("parameters"), "parameter_declaration").find((n) => n.childForFieldName("name")?.text === batch && n.childForFieldName("type")?.type === "slice_type");
-          if (!parameter) continue;
-          const item = lhs.namedChildren;
-          if (item.length !== 2 || item[0]?.text !== "_" || item[1]?.type !== "identifier") continue;
-          const itemName = item[1].text;
-          const emitCall = emission.namedChildren[0];
-          if (emitCall?.type !== "call_expression" || emitCall.childForFieldName("function")?.text !== `${metric}.Add`) continue;
-          const emitArgs = emitCall.childForFieldName("arguments")?.namedChildren;
-          if (emitArgs?.length !== 1 || emitArgs[0]?.text.replace(/\s/g, "") !== `float64(len(${batch}))`) continue;
-          const loopStatements = batchStatements(loop.childForFieldName("body"));
-          if (loopStatements.length !== 1 || loopStatements[0]?.type !== "if_statement") continue;
-          const guard = loopStatements[0];
-          if (guard.childForFieldName("alternative")) continue;
-          const init2 = guard.childForFieldName("initializer");
-          if (init2?.type !== "short_var_declaration") continue;
-          const err2 = init2.childForFieldName("left")?.text;
-          const work = init2.childForFieldName("right")?.namedChildren[0];
-          if (!err2 || !/^[A-Za-z_]\w*$/.test(err2) || err2 === "_" || work?.type !== "call_expression") continue;
-          const workArgs = work.childForFieldName("arguments")?.namedChildren;
-          if (workArgs?.length !== 1 || workArgs[0]?.text !== itemName) continue;
-          if (guard.childForFieldName("condition")?.text.replace(/\s/g, "") !== `${err2}!=nil`) continue;
-          const exits = batchStatements(guard.childForFieldName("consequence"));
-          if (exits.length !== 1 || !["break_statement", "continue_statement"].includes(exits[0].type) || exits[0].namedChildCount !== 0) continue;
-          const uses = descendants(fn, "identifier").filter((n) => n.text === batch);
-          if (uses.some((n) => n.startIndex < loop.endIndex && n.id !== batchNode.id && n.startIndex !== parameter.childForFieldName("name")?.startIndex)) continue;
-          if (["len", "float64", alias].some((name3) => batchDeclares(root, name3))) continue;
-          const nodes = [emission, guard, range, help];
-          matches.push({
-            metric,
-            batch,
-            exit: exits[0].text,
-            nodes,
-            signature: [metric, fn.childForFieldName("name")?.text, ...nodes.map(batchCountSignature)].join(":")
-          });
-        }
-      }
-    }
-  }
-  return matches;
+  return root.namedChildren.filter((n) => n.type === "var_declaration").flatMap((n) => descendants(n, "var_spec")).flatMap((n) => {
+    const contract = metricContract(n, root, aliases);
+    return contract ? [contract] : [];
+  });
+}
+function directWorkFailure(loop, item) {
+  const ss = batchStatements(loop.childForFieldName("body"));
+  const guard = ss[0];
+  if (ss.length !== 1 || guard?.type !== "if_statement" || guard.childForFieldName("alternative")) return void 0;
+  const init2 = guard.childForFieldName("initializer");
+  if (init2?.type !== "short_var_declaration") return void 0;
+  const err2 = init2.childForFieldName("left")?.text;
+  const work = init2.childForFieldName("right")?.namedChildren[0];
+  if (!err2 || !/^[A-Za-z_]\w*$/.test(err2) || err2 === "_" || work?.type !== "call_expression") return void 0;
+  const args2 = work.childForFieldName("arguments")?.namedChildren;
+  if (args2?.length !== 1 || args2[0]?.text !== item) return void 0;
+  if (guard.childForFieldName("condition")?.text.replace(/\s/g, "") !== `${err2}!=nil`) return void 0;
+  const exits = batchStatements(guard.childForFieldName("consequence"));
+  if (exits.length !== 1 || !["break_statement", "continue_statement"].includes(exits[0].type) || exits[0].namedChildCount !== 0) return void 0;
+  return { guard, exit: exits[0].text };
+}
+function matchBatch(root, fn, loop, emission, contract) {
+  if (loop.type !== "for_statement" || emission.type !== "expression_statement") return void 0;
+  const range = loop.namedChildren.find((n) => n.type === "range_clause");
+  const batchNode = range?.childForFieldName("right");
+  const lhs = range?.childForFieldName("left");
+  if (!batchNode || batchNode.type !== "identifier" || !lhs) return void 0;
+  const batch = batchNode.text;
+  const parameter = descendants(fn.childForFieldName("parameters"), "parameter_declaration").find((n) => n.childForFieldName("name")?.text === batch && n.childForFieldName("type")?.type === "slice_type");
+  if (!parameter) return void 0;
+  const item = lhs.namedChildren;
+  if (item.length !== 2 || item[0]?.text !== "_" || item[1]?.type !== "identifier") return void 0;
+  const emitCall = emission.namedChildren[0];
+  if (emitCall?.type !== "call_expression" || emitCall.childForFieldName("function")?.text !== `${contract.metric}.Add`) return void 0;
+  const args2 = emitCall.childForFieldName("arguments")?.namedChildren;
+  if (args2?.length !== 1 || args2[0]?.text.replace(/\s/g, "") !== `float64(len(${batch}))`) return void 0;
+  const failure = directWorkFailure(loop, item[1].text);
+  if (!failure) return void 0;
+  const uses = descendants(fn, "identifier").filter((n) => n.text === batch);
+  if (uses.some((n) => n.startIndex < loop.endIndex && n.id !== batchNode.id && n.startIndex !== parameter.childForFieldName("name")?.startIndex)) return void 0;
+  if (["len", "float64"].some((name2) => batchShadowed(root, name2, emission)) || batchShadowedLocally(root, contract.metric, emission)) return void 0;
+  const nodes = [emission, failure.guard, range];
+  return {
+    metric: contract.metric,
+    batch,
+    exit: failure.exit,
+    nodes,
+    signature: [contract.metric, fn.childForFieldName("name")?.text, ...nodes.map(batchCountSignature)].join(":")
+  };
+}
+function batchCountCandidates(root) {
+  const contracts = metricContracts2(root);
+  return root.namedChildren.filter((n) => n.type === "function_declaration").flatMap((fn) => {
+    const ss = batchStatements(fn.childForFieldName("body"));
+    return ss.slice(0, -1).flatMap((loop, index) => contracts.flatMap((contract) => {
+      const match = matchBatch(root, fn, loop, ss[index + 1], contract);
+      return match ? [match] : [];
+    }));
+  });
 }
 
 // src/analyze.ts

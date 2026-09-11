@@ -74,3 +74,24 @@ test("the new batch-count signal is included in normal discovery analysis", asyn
   const analysis = await analyzeDiscovery({ mode: "repository", files: [source(code)] });
   assert.equal(analysis.signals.filter((s) => s.ruleId === "go-obs.metrics.planned-batch-as-executed").length, 1);
 });
+
+
+test("unrelated lexical bindings do not suppress the batch finding", async () => {
+  for (const name of ["len", "float64", "prometheus", "done"]) {
+    const extraFunction = code + `\nfunc unrelated(${name} int) { _ = ${name} }\n`;
+    const siblingBlock = code.replace("func run(items []Job) {", `func run(items []Job) { { ${name} := 1; _ = ${name} };`);
+    const laterBinding = code.replace("  done.Add(float64(len(items)))", `  done.Add(float64(len(items)))\n  ${name} := 1; _ = ${name}`);
+    for (const current of [extraFunction, siblingBlock, laterBinding]) {
+      assert.equal((await batchExecutionCountSignals([source(current)])).length, 1, name);
+    }
+  }
+});
+
+test("Help edits alone do not activate a pre-existing batch relationship", async () => {
+  for (const help of ["Number of jobs.", "Number of completed jobs.", "Number of successful tasks."]) {
+    const previous = code.replace("Number of successful jobs.", help);
+    assert.deepEqual(await batchExecutionCountSignals([source(code, {
+      status: "modified", previous, changedLines: new Set([4]),
+    })]), []);
+  }
+});
