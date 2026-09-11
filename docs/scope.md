@@ -15,6 +15,7 @@ Review Go logs, traces, metrics, context propagation, and telemetry lifecycle.
 - Missing/broken context propagation for telemetry
 - Metric/log/trace lifecycle defects
 - High-cardinality or incorrect instrumentation in Go
+- Completed-work counters that record the planned batch despite a proven work-error path that stops or skips execution
 
 ## Out of scope (not a miss for this adversary)
 

@@ -17095,6 +17095,17 @@ var domain = {
   includePath: (path) => path.endsWith(".go") && !path.endsWith("_test.go"),
   rules: [
     {
+      id: "go-obs.metrics.planned-batch-as-executed",
+      title: "A completion counter records planned work after a batch failure",
+      category: "observability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} completion counter emission${count === 1 ? " counts" : "s count"} the entire input batch despite a reachable work failure.`,
+      whyItMatters: "A selected batch is not evidence that every item completed successfully.",
+      impact: "Completion metrics overstate successful work when a failed item stops or skips execution.",
+      recommendation: "Increment after each successful operation or record the actual completed count; keep planned, attempted, and successful metrics separate according to their contracts."
+    },
+    {
       id: "go-obs.logging.lossy-parse-classification",
       title: "A parser failure is collapsed into a sentinel without diagnostics",
       category: "observability",
@@ -23333,6 +23344,136 @@ function directory(path) {
   return separator === -1 ? "" : path.slice(0, separator);
 }
 
+// src/batch-execution-count.ts
+var RULE = "go-obs.metrics.planned-batch-as-executed";
+async function batchExecutionCountSignals(files) {
+  const result = [];
+  for (const file of files) {
+    if (!file.path.endsWith(".go") || file.path.endsWith("_test.go")) continue;
+    const tree = await parseGo(file.current);
+    const previous = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+    try {
+      if (tree.rootNode.hasError) continue;
+      const old = previous && !previous.rootNode.hasError ? batchCountCandidates(previous.rootNode) : [];
+      for (const candidate of batchCountCandidates(tree.rootNode)) {
+        if (file.status === "modified" && (previous === void 0 || previous.rootNode.hasError || old.some((x) => x.signature === candidate.signature))) continue;
+        const anchor = candidate.nodes.find((node) => file.status !== "modified" || Array.from({ length: node.endPosition.row - node.startPosition.row + 1 }, (_, i2) => node.startPosition.row + i2 + 1).some((line) => file.changedLines.has(line)));
+        if (!anchor) continue;
+        result.push({
+          ruleId: RULE,
+          path: file.path,
+          line: anchor.startPosition.row + 1,
+          message: `${candidate.metric} counts completed work, but records the full ${candidate.batch} length after a work error can ${candidate.exit} the batch loop.`,
+          snippet: anchor.text.slice(0, 300),
+          data: {
+            metric: candidate.metric,
+            batch: candidate.batch,
+            earlyExit: candidate.exit,
+            emissionLine: candidate.nodes[0].startPosition.row + 1,
+            scope: "same-file-direct-batch-counter"
+          }
+        });
+      }
+    } finally {
+      previous?.delete();
+      tree.delete();
+    }
+  }
+  return result;
+}
+function batchCountSignature(node) {
+  if (node.type === "comment") return "";
+  return node.namedChildCount ? node.namedChildren.map(batchCountSignature).join("|") : node.text.replace(/\s/g, "");
+}
+function batchStatements(block) {
+  return block?.namedChildren.flatMap((n) => n.type === "statement_list" ? n.namedChildren : [n]).filter((n) => n.type !== "comment") ?? [];
+}
+function batchDeclares(root, name2) {
+  return descendants(root, "identifier").some((node) => {
+    if (node.text !== name2) return false;
+    let parent = node.parent;
+    if (parent?.type === "expression_list") {
+      const assignment = parent.parent;
+      return assignment?.type === "short_var_declaration" && assignment.childForFieldName("left")?.id === parent.id;
+    }
+    return ["parameter_declaration", "var_spec", "const_spec", "type_spec", "function_declaration"].includes(parent?.type ?? "") && parent?.childForFieldName("name")?.id === node.id;
+  });
+}
+function batchCountCandidates(root) {
+  const matches = [];
+  const imports = descendants(root, "import_spec").flatMap((n) => {
+    const m = /^(?:(\w+)\s+)?"github.com\/prometheus\/client_golang\/prometheus"$/.exec(n.text);
+    return m ? [m[1] ?? "prometheus"] : [];
+  });
+  for (const decl of root.namedChildren.filter((n) => n.type === "var_declaration")) {
+    for (const spec of descendants(decl, "var_spec")) {
+      const name2 = spec.childForFieldName("name");
+      const value = spec.childForFieldName("value");
+      const call = value?.namedChildren[0];
+      if (!name2 || name2.type !== "identifier" || !call || call.type !== "call_expression") continue;
+      const callee = call.childForFieldName("function")?.text;
+      const alias = imports.find((a) => callee === `${a}.NewCounter`);
+      if (!alias) continue;
+      const args2 = call.childForFieldName("arguments")?.namedChildren;
+      if (args2?.length !== 1 || args2[0]?.type !== "composite_literal" || args2[0].childForFieldName("type")?.text !== `${alias}.CounterOpts`) continue;
+      const help = descendants(args2[0], "keyed_element").find((n) => n.namedChildren[0]?.text === "Help")?.namedChildren[1];
+      if (!help || !/^"[^"\\]*\b(?:completed|successful|successfully processed)\b[^"\\]*"$/i.test(help.text) || /\b(?:not|non|uncompleted|planned|selected|scheduled|attempts|failed|failure|all outcomes)\b/i.test(help.text)) continue;
+      const metric = name2.text;
+      const identifiers = descendants(root, "identifier").filter((n) => n.text === metric && n.id !== name2.id);
+      if (identifiers.some((n) => n.parent?.type !== "selector_expression" || n.parent.childForFieldName("operand")?.id !== n.id)) continue;
+      for (const fn of root.namedChildren.filter((n) => n.type === "function_declaration")) {
+        const body2 = fn.childForFieldName("body");
+        const ss = batchStatements(body2);
+        for (let index = 0; index < ss.length - 1; index++) {
+          const loop = ss[index];
+          const emission = ss[index + 1];
+          if (loop.type !== "for_statement" || emission.type !== "expression_statement") continue;
+          const range = loop.namedChildren.find((n) => n.type === "range_clause");
+          const batchNode = range?.childForFieldName("right");
+          const lhs = range?.childForFieldName("left");
+          if (!batchNode || batchNode.type !== "identifier" || !lhs) continue;
+          const batch = batchNode.text;
+          const parameter = descendants(fn.childForFieldName("parameters"), "parameter_declaration").find((n) => n.childForFieldName("name")?.text === batch && n.childForFieldName("type")?.type === "slice_type");
+          if (!parameter) continue;
+          const item = lhs.namedChildren;
+          if (item.length !== 2 || item[0]?.text !== "_" || item[1]?.type !== "identifier") continue;
+          const itemName = item[1].text;
+          const emitCall = emission.namedChildren[0];
+          if (emitCall?.type !== "call_expression" || emitCall.childForFieldName("function")?.text !== `${metric}.Add`) continue;
+          const emitArgs = emitCall.childForFieldName("arguments")?.namedChildren;
+          if (emitArgs?.length !== 1 || emitArgs[0]?.text.replace(/\s/g, "") !== `float64(len(${batch}))`) continue;
+          const loopStatements = batchStatements(loop.childForFieldName("body"));
+          if (loopStatements.length !== 1 || loopStatements[0]?.type !== "if_statement") continue;
+          const guard = loopStatements[0];
+          if (guard.childForFieldName("alternative")) continue;
+          const init2 = guard.childForFieldName("initializer");
+          if (init2?.type !== "short_var_declaration") continue;
+          const err2 = init2.childForFieldName("left")?.text;
+          const work = init2.childForFieldName("right")?.namedChildren[0];
+          if (!err2 || !/^[A-Za-z_]\w*$/.test(err2) || err2 === "_" || work?.type !== "call_expression") continue;
+          const workArgs = work.childForFieldName("arguments")?.namedChildren;
+          if (workArgs?.length !== 1 || workArgs[0]?.text !== itemName) continue;
+          if (guard.childForFieldName("condition")?.text.replace(/\s/g, "") !== `${err2}!=nil`) continue;
+          const exits = batchStatements(guard.childForFieldName("consequence"));
+          if (exits.length !== 1 || !["break_statement", "continue_statement"].includes(exits[0].type) || exits[0].namedChildCount !== 0) continue;
+          const uses = descendants(fn, "identifier").filter((n) => n.text === batch);
+          if (uses.some((n) => n.startIndex < loop.endIndex && n.id !== batchNode.id && n.startIndex !== parameter.childForFieldName("name")?.startIndex)) continue;
+          if (["len", "float64", alias].some((name3) => batchDeclares(root, name3))) continue;
+          const nodes = [emission, guard, range, help];
+          matches.push({
+            metric,
+            batch,
+            exit: exits[0].text,
+            nodes,
+            signature: [metric, fn.childForFieldName("name")?.text, ...nodes.map(batchCountSignature)].join(":")
+          });
+        }
+      }
+    }
+  }
+  return matches;
+}
+
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
   const signals = [];
@@ -23368,6 +23509,7 @@ async function analyzeDiscovery(discovery) {
   signals.push(...await successLatencyOnNonSuccessPathSignals(discovery.files));
   signals.push(...await cancellationEscalationSignals(discovery.files));
   signals.push(...await lossyErrorClassificationSignals(discovery.files));
+  signals.push(...await batchExecutionCountSignals(discovery.files));
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
