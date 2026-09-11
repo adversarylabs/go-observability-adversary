@@ -23355,9 +23355,11 @@ async function batchExecutionCountSignals(files) {
   return result;
 }
 async function batchFileSignals(file) {
-  const tree = await parseGo(file.current);
-  const previous = file.previous === void 0 ? void 0 : await parseGo(file.previous);
+  let tree;
+  let previous;
   try {
+    tree = await parseGo(file.current);
+    previous = file.previous === void 0 ? void 0 : await parseGo(file.previous);
     if (tree.rootNode.hasError) return [];
     if (file.status === "modified" && (!previous || previous.rootNode.hasError)) return [];
     const old = previous ? batchCountCandidates(previous.rootNode) : [];
@@ -23382,7 +23384,7 @@ async function batchFileSignals(file) {
     });
   } finally {
     previous?.delete();
-    tree.delete();
+    tree?.delete();
   }
 }
 function touchesChange(file, node) {

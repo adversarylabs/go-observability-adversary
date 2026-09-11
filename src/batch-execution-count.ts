@@ -1,5 +1,5 @@
 import { descendants, parseGo } from "./parser.js";
-import type { Node } from "web-tree-sitter";
+import type { Node, Tree } from "web-tree-sitter";
 import type { Signal, SourceRevision } from "./types.js";
 
 const RULE = "go-obs.metrics.planned-batch-as-executed";
@@ -17,9 +17,11 @@ export async function batchExecutionCountSignals(files: SourceRevision[]): Promi
 }
 
 async function batchFileSignals(file: SourceRevision): Promise<Signal[]> {
-  const tree = await parseGo(file.current);
-  const previous = file.previous === undefined ? undefined : await parseGo(file.previous);
+  let tree: Tree | undefined;
+  let previous: Tree | undefined;
   try {
+    tree = await parseGo(file.current);
+    previous = file.previous === undefined ? undefined : await parseGo(file.previous);
     if (tree.rootNode.hasError) return [];
     if (file.status === "modified" && (!previous || previous.rootNode.hasError)) return [];
     const old = previous ? batchCountCandidates(previous.rootNode) : [];
@@ -33,7 +35,7 @@ async function batchFileSignals(file: SourceRevision): Promise<Signal[]> {
           earlyExit: candidate.exit, emissionLine: candidate.nodes[0]!.startPosition.row + 1,
           scope: "same-file-direct-batch-counter" } }];
     });
-  } finally { previous?.delete(); tree.delete(); }
+  } finally { previous?.delete(); tree?.delete(); }
 }
 
 function touchesChange(file: SourceRevision, node: Node): boolean {
