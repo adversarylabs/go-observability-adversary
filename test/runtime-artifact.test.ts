@@ -137,7 +137,7 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/observability");
-  assert.equal(envelope.result.adversary.version, "0.0.15");
+  assert.equal(envelope.result.adversary.version, (JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version);
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-obs.logging.normal-cancellation-as-error",
     "go-obs.logging.lossy-parse-classification",
